@@ -47,8 +47,6 @@ $script:VsProjectExtensions = @('.csproj', '.vbproj', '.fsproj', '.vcxproj', '.s
 $script:VsSkipDirs = @('node_modules', 'bin', 'obj', 'packages', 'TestResults', 'artifacts', 'dist')
 # At a drive root only: nobody keeps solutions there, and walking them costs seconds.
 $script:VsDriveRootSkipDirs = @('Windows', 'Program Files', 'Program Files (x86)', 'PerfLogs', 'Recovery')
-# Hosts whose console the picker can drive: the terminal, and the VS Code PowerShell extension's.
-$script:VsInteractiveHosts = @('ConsoleHost', 'Visual Studio Code Host')
 # 1 once something did not happen as asked (nothing found, cancelled, a refused value); vs.ps1
 # exits with it, so cmd, bash and scripts can tell. Reset by every `vs` call.
 $script:VsExitCode = 0
@@ -649,7 +647,7 @@ function Get-VsFilterMatches {
 function Test-VsConsole {
     # The picker and the prompt drive the console directly; without one to drive (another host,
     # redirected input or output) they fall back to plain text.
-    if ($script:VsInteractiveHosts -notcontains $Host.Name) { return $false }
+    if ($Host.Name -ne 'ConsoleHost') { return $false }
     try { -not ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) } catch { $false }
 }
 function Get-VsConsoleWidth {
@@ -1361,6 +1359,9 @@ NOTES:
     run it once in each edition you use (pwsh, Windows PowerShell 5.1).
   - through vs.ps1 - the Scoop shim in cmd, Git Bash or a script - vs exits with 1 when
     nothing was found, opened or changed as asked, else 0.
+  - the picker and the confirm need a console: PowerShell or Git Bash in Windows Terminal
+    have one. Git Bash in its own window (mintty) hands vs pipes instead, so there it
+    prints the list - open one with 'vs <name>'.
   - nothing goes online unless you ask: 'vs update' checks once, 'vs update notify on'
     daily, in the background - its answer shows after a later command. It is one HEAD
     request to GitHub's releases page; no telemetry.

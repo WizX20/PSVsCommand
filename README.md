@@ -174,6 +174,9 @@ NOTES:
     run it once in each edition you use (pwsh, Windows PowerShell 5.1).
   - through vs.ps1 - the Scoop shim in cmd, Git Bash or a script - vs exits with 1 when
     nothing was found, opened or changed as asked, else 0.
+  - the picker and the confirm need a console: PowerShell or Git Bash in Windows Terminal
+    have one. Git Bash in its own window (mintty) hands vs pipes instead, so there it
+    prints the list - open one with 'vs <name>'.
   - nothing goes online unless you ask: 'vs update' checks once, 'vs update notify on'
     daily, in the background - its answer shows after a later command. It is one HEAD
     request to GitHub's releases page; no telemetry.

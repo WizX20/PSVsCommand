@@ -27,7 +27,6 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 - SSAS projects (`.smproj`, `.dwproj`) are recognised and go to an install with the Analysis Services extension.
 - Through the Scoop shim (cmd, Git Bash, scripts) `vs` exits with 1 when nothing was found, opened or changed as asked.
-- The VS Code PowerShell extension's terminal gets the picker and the confirm prompt too, instead of the plain table.
 
 ### Changed
 
