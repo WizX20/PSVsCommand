@@ -42,7 +42,8 @@ task help                   # print `vs --help` (the README quotes it verbatim)
 
 - Tests need **Pester 5+** (`Install-Module Pester -MinimumVersion 5.5 -Scope CurrentUser -Force -SkipPublisherCheck`) and lint needs **PSScriptAnalyzer** (`Install-Module PSScriptAnalyzer -Scope CurrentUser`). On CI both are installed on the fly when missing. The Pester 3.4 that ships with Windows cannot run the suite.
 - No test needs Visual Studio. `New-FakeVs` builds an install folder with an empty `devenv.exe` and the extension folders it should have, and describes it the way vswhere does; `Invoke-VsWhere`, `Find-VsLegacyInstalls` and `Get-VsInstancesStamp` are mocked to hand those over. `Start-VsProcess` is mocked everywhere a test opens something — assert on its `-Exe` and `-Argument`.
-- Every test gets its own `PSVSCOMMAND_HOME` under `$TestDrive`; the update tests mock `Get-VsLatestRelease` (a mock that must not be called asserts `-Times 0`) and `Get-VsNow` for the once-a-day/once-a-week throttles.
+- Every test gets its own `PSVSCOMMAND_HOME` under `$TestDrive`; the update tests mock `Get-VsLatestRelease` (a mock that must not be called asserts `-Times 0`), `Start-VsUpdateCheck` (the hidden child process of the daily check — never let the suite start one) and `Get-VsNow` for the once-a-day/once-a-week throttles.
+- Exit codes: failures go through `Write-VsFail`, which sets `$script:VsExitCode`; `vs.ps1` exits with it. The `vs.ps1` tests start the entry script as a child process of the same edition, the way Scoop's `vs.cmd` does.
 - `vs` prints through `Write-Host`; tests capture it with `6>&1` (the `Get-VsOutput { vs ... }` helper). Call `vs` with real switches inside the block — splatting `'-Yes'` as a string would bind it positionally.
 - The picker and the confirm prompt read the console directly and are not under test (`Test-VsConsole` is mocked to `$false`, which takes the plain-text paths); try them by hand in a folder with a few solutions.
 

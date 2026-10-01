@@ -18,11 +18,28 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
   adding or removing an install did, so an `.slnx` could be refused until `vs scan`.
 - `vs <name>` opens an exact name straight away (`vs Backend` with `Backend.sln` and `BackendTests.sln` next to it),
   and a path that does not exist says so instead of being searched for as a name.
+- `vs update` on a global Scoop install (`scoop install -g`) says to run `scoop update psvscommand --global` from an
+  elevated shell instead of running a plain `scoop update` that cannot touch it.
+- `-Depth 0` is refused instead of quietly meaning the default, and `vs /?` from Git Bash (which turns it into a path)
+  shows the help.
+
+### Added
+
+- SSAS projects (`.smproj`, `.dwproj`) are recognised and go to an install with the Analysis Services extension.
+- Through the Scoop shim (cmd, Git Bash, scripts) `vs` exits with 1 when nothing was found, opened or changed as asked.
+- The VS Code PowerShell extension's terminal gets the picker and the confirm prompt too, instead of the plain table.
 
 ### Changed
 
 - Loading the module (the profile line) is about 200 ms faster: the version is read when it is needed, not at
   import.
+- A plain file (`vs Program.cs`) opens in a Visual Studio that is already running (`devenv /Edit`) instead of a new one.
+- The opt-in daily update check runs in a hidden background process; no command waits for GitHub any more, and the
+  news shows after a later command.
+- Repeated `vs` calls are faster (the list ~30% warm; rows and table two to three times), Tab completion reuses the
+  names it found for 15 seconds, and the search skips hidden folders (`AppData`), `artifacts` and `dist`, and at a
+  drive root the Windows and program folders.
+- Only a `devenv.exe` is ever started from the install cache.
 
 ## [1.0.0] - 2026-10-01
 
