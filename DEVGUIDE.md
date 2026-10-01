@@ -98,11 +98,16 @@ If step 11 fails after step 10 pushed, create the release by hand with `git gh r
 
 `main` is protected by a ruleset (pull requests only, squash merges only, CI checks required, no force-push; only the repository admin may bypass). `GITHUB_TOKEN` cannot bypass rulesets on a user-owned repository, so the release commit is pushed with a maintainer token:
 
-1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate. Resource owner `WizX20`, repository access: only `PSVsCommand` (PSWorktree has its own token, `PSWORKTREE_RELEASE_TOKEN`), permissions: **Contents: Read and write** (Metadata: Read is added automatically). Expiry: one year at most.
-2. `git gh secret set PSVSCOMMAND_RELEASE_TOKEN -R WizX20/PSVsCommand` and paste the token.
-3. Put the expiry in the title of the rotation issue ([#1](https://github.com/WizX20/PSVsCommand/issues/1)).
+1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate. Resource owner `WizX20`, repository access: only `PSVsCommand` (PSWorktree has its own token, `PSWORKTREE_RELEASE_TOKEN`), permissions: **Contents: Read and write** (Metadata: Read is added automatically). Expiry: 90 days (the current token's lifetime; one year at most).
+2. Copy the token and, inside this clone, pipe it in — `git gh` is the repo's alias (see above), plain `gh` would act as the wrong account, and the value stays out of the shell history:
 
-The `check` job fails early with a clear message when the secret is missing. CI's required **release token expiry** job reads the token's real expiry from the API (`GitHub-Authentication-Token-Expiration` header) on every PR and push: a warning 30 days out, a failure 14 days out — so an expiring token blocks merges until it is rotated, and no date has to be maintained by hand. Rotating is the same two steps as above; the issue keeps the checklist. A push with this token also triggers CI on `main` for the release commit — expected, one extra run per release. Without expiry the same can be done with a GitHub App added to the ruleset's bypass list; not worth it for one maintainer.
+   ```powershell
+   Get-Clipboard | git gh secret set PSVSCOMMAND_RELEASE_TOKEN -R WizX20/PSVsCommand
+   ```
+
+3. Re-run the **release token expiry** job (or push anything): its log and run summary show the expiry GitHub reports. Put that date, and a rotate-by date two weeks before it, in the title of the rotation issue ([#1](https://github.com/WizX20/PSVsCommand/issues/1)).
+
+The `check` job fails early with a clear message when the secret is missing. CI's required **release token expiry** job reads the token's real expiry from the API (`GitHub-Authentication-Token-Expiration` header) on every PR and push: a warning 30 days out, a failure 14 days out — so an expiring token blocks merges until it is rotated, and no date has to be maintained by hand. Rotating is the same three steps as above; the issue keeps the checklist. A push with this token also triggers CI on `main` for the release commit — expected, one extra run per release. Without expiry the same can be done with a GitHub App added to the ruleset's bypass list; not worth it for one maintainer.
 
 ### Branch rules (ruleset `main`)
 
