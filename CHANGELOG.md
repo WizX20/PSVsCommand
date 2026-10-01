@@ -6,6 +6,8 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-01
+
 ### Added
 
 - First public release of `vs`, the Visual Studio launcher that lived in a `vs.ps1` script until now.
@@ -31,3 +33,4 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 - `vs install profile` / `vs uninstall profile` for the `Import-Module` line behind Tab completion.
 - Packaged as the `PSVsCommand` PowerShell module with a `vs.ps1` entry script; installable with Scoop from this
   repo's bucket, which puts a `vs` shim on PATH for PowerShell, cmd and Git Bash alike.
+
