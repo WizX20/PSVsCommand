@@ -1,0 +1,85 @@
+name: Bug report
+description: Something doesn't work the way it should.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. The more concrete the repro, the faster it gets fixed.
+        Paste command output as text rather than screenshots where you can.
+
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched [open and closed issues](https://github.com/WizX20/PSVsCommand/issues?q=) for duplicates.
+          required: true
+        - label: I ran `vs scan` and then the failing command again in a fresh shell.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: vs version
+      description: "The first line of `vs version` — or `main` + commit if you run from a checkout."
+      placeholder: "vs 1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: powershell
+    attributes:
+      label: PowerShell
+      description: "`$PSVersionTable.PSEdition` and `.PSVersion`, plus the host (Windows Terminal, VS Code, conhost…) — or cmd / Git Bash if you ran the Scoop shim from there."
+      placeholder: "Core 7.6.3 in Windows Terminal"
+    validations:
+      required: true
+
+  - type: textarea
+    id: installs
+    attributes:
+      label: Visual Studio installs
+      description: Output of `vs installs`.
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - Scoop
+        - Manual (copied the module folder)
+        - Running from a checkout of this repo
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Number the steps so they can be followed verbatim. Include the exact `vs` command line and, if it is about which solution or Visual Studio was picked, the output of `vs list` in that folder.
+      placeholder: |
+        1. In a folder with Backend.sln and AdminTools.sln below it, run `vs` …
+        2. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Full console output, including any red error text.
+      render: text
+    validations:
+      required: true
