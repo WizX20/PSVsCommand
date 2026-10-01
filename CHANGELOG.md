@@ -6,6 +6,24 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+### Fixed
+
+- Solutions in folders under OneDrive (Files On-Demand) are found: the search skipped every folder with the
+  reparse-point attribute, which OneDrive sets on all of them. Only real junctions and symlinks are skipped now.
+- An SSRS or SSIS extension installed as a VSIX — per user, or per machine under the install — is recognised by
+  its display name; before, only the extension's folder under `CommonExtensions` counted.
+- Team Explorer and installs an update left half done are no longer picked to open a solution; on equal versions
+  Enterprise goes before Professional before Community.
+- Updating Visual Studio within a major (17.12 → 17.14) refreshes the install cache on its own; until now only
+  adding or removing an install did, so an `.slnx` could be refused until `vs scan`.
+- `vs <name>` opens an exact name straight away (`vs Backend` with `Backend.sln` and `BackendTests.sln` next to it),
+  and a path that does not exist says so instead of being searched for as a name.
+
+### Changed
+
+- Loading the module (the profile line) is about 200 ms faster: the version is read when it is needed, not at
+  import.
+
 ## [1.0.0] - 2026-10-01
 
 ### Added

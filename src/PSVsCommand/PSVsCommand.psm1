@@ -23,19 +23,21 @@
 $ErrorActionPreference = 'Continue'
 $script:Repo = 'WizX20/PSVsCommand'
 $script:ProjectUrl = "https://github.com/$script:Repo"
-$script:ModuleVersion = [version](Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'PSVsCommand.psd1')).ModuleVersion
 
 # Major version -> the year in the product name. Visual Studio 2026 (18) dropped the year from
 # its catalog's productLineVersion, so the display name is read first and this is the fallback.
 $script:VsYears = @{ 10 = '2010'; 11 = '2012'; 12 = '2013'; 14 = '2015'; 15 = '2017'; 16 = '2019'; 17 = '2022'; 18 = '2026' }
 # Project types that only load in a Visual Studio carrying an extension. Folder is where the
-# extension lands under Common7\IDE\CommonExtensions\Microsoft; Manifest is looked for in
-# per-user VSIX installs. The GUID is the project type in a .sln: old SSRS solutions (Format
-# Version 13, "# Visual Studio 2013") name it without a .rptproj path that would give it away.
+# extension lands under Common7\IDE\CommonExtensions\Microsoft; Manifest matches the DisplayName
+# of a VSIX install ("Microsoft Reporting Services Projects" - its identity is a bare GUID). The
+# GUID is the project type in a .sln: old SSRS solutions (Format Version 13, "# Visual Studio
+# 2013") name it without a .rptproj path that would give it away.
 $script:VsWorkloads = @(
-    @{ Cap = 'SSRS'; Label = 'Reporting Services'; Extensions = @('.rptproj'); Guids = @('{F14B399A-7131-4C87-9E4B-1186C45EF12D}'); Folder = 'SSRS'; Manifest = 'ReportingServices' }
-    @{ Cap = 'SSIS'; Label = 'Integration Services'; Extensions = @('.dtproj'); Guids = @(); Folder = 'SSIS'; Manifest = 'IntegrationServices' }
+    @{ Cap = 'SSRS'; Label = 'Reporting Services'; Extensions = @('.rptproj'); Guids = @('{F14B399A-7131-4C87-9E4B-1186C45EF12D}'); Folder = 'SSRS'; Manifest = '<DisplayName>[^<]*Reporting\s*Services' }
+    @{ Cap = 'SSIS'; Label = 'Integration Services'; Extensions = @('.dtproj'); Guids = @(); Folder = 'SSIS'; Manifest = '<DisplayName>[^<]*Integration\s*Services' }
 )
+# Rank on equal versions: the edition with the most in it first.
+$script:VsEditionRank = @{ Enterprise = 0; Professional = 1; Community = 2 }
 $script:VsSolutionExtensions = @('.sln', '.slnx')
 $script:VsProjectExtensions = @('.csproj', '.vbproj', '.fsproj', '.vcxproj', '.sqlproj', '.rptproj', '.dtproj')
 # Never worth a look. Every dot-folder is skipped as well (.git, .vs, .idea), which also keeps the
@@ -79,6 +81,14 @@ function ConvertTo-VsHashtable {
     $h
 }
 function Get-VsNow { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+function Get-VsVersion {
+    # The module's own version, looked up when needed: reading the manifest at load time cost
+    # every shell with the profile line ~200 ms. Loaded without its manifest the module has no
+    # version of its own, so the manifest is the fallback.
+    $v = $MyInvocation.MyCommand.Module.Version
+    if (-not $v -or $v -eq [version]'0.0') { $v = [version](Import-PowerShellDataFile -LiteralPath (Join-Path $PSScriptRoot 'PSVsCommand.psd1')).ModuleVersion }
+    $v
+}
 
 # --- settings -------------------------------------------------------------------------------
 function Get-VsConfig {
@@ -179,10 +189,16 @@ function Invoke-VsWhere {
 }
 function ConvertFrom-VsWhere {
     # One vswhere instance -> an install; nothing for products without devenv.exe (Build Tools,
-    # SQL Server Management Studio: vswhere lists those too).
+    # SQL Server Management Studio: vswhere lists those too), for Team Explorer (a devenv.exe
+    # that opens no solution), or for an install an update left half done (isComplete or
+    # isLaunchable false; older vswhere versions leave the fields out, which counts as fine).
     param([object]$Instance)
     $exe = [string]$Instance.productPath
     if (-not $exe -or [System.IO.Path]::GetFileName($exe) -ne 'devenv.exe') { return }
+    if ([string]$Instance.productId -like '*.TeamExplorer') { return }
+    foreach ($flag in 'isComplete', 'isLaunchable') {
+        if ($Instance.PSObject.Properties[$flag] -and -not $Instance.$flag) { return }
+    }
     $name = [string]$Instance.displayName
     $version = $null
     if (-not [version]::TryParse([string]$Instance.installationVersion, [ref]$version)) { return }
@@ -234,24 +250,44 @@ function Find-VsLegacyInstalls {
         New-VsInstall -Id "legacy-$v" -Version (Get-VsFileVersion $exe) -Path $exe -InstallPath (Split-Path (Split-Path (Split-Path $exe))) -Source 'registry'
     }
 }
-function Test-VsUserExtension {
-    # A VSIX installed per user lands in %LOCALAPPDATA%\Microsoft\VisualStudio\<major>.0_<id>\Extensions.
-    param([object]$Install, [string]$Pattern)
-    if (-not $Install.Id -or -not $env:LOCALAPPDATA) { return $false }
-    $dir = Join-Path $env:LOCALAPPDATA "Microsoft\VisualStudio\$($Install.Major).0_$($Install.Id)\Extensions"
-    if (-not (Test-Path -LiteralPath $dir)) { return $false }
-    foreach ($m in @(Get-ChildItem -LiteralPath $dir -Filter 'extension.vsixmanifest' -Recurse -Depth 3 -File -ErrorAction SilentlyContinue)) {
-        if (Select-String -LiteralPath $m.FullName -Pattern $Pattern -SimpleMatch -Quiet) { return $true }
+function Find-VsManifests {
+    # extension.vsixmanifest files below an Extensions folder, at most Depth levels down; a folder
+    # that holds one is not searched further. A plain walk: Get-ChildItem -Recurse over Visual
+    # Studio's own Extensions tree took seconds on a cold disk.
+    param([string]$Root, [int]$Depth = 3)
+    if (-not $Root -or -not [System.IO.Directory]::Exists($Root)) { return }
+    $stack = New-Object System.Collections.Generic.Stack[object]
+    $stack.Push(@($Root, 0))
+    while ($stack.Count -gt 0) {
+        $node = $stack.Pop()
+        $file = [System.IO.Path]::Combine($node[0], 'extension.vsixmanifest')
+        if ([System.IO.File]::Exists($file)) { $file; continue }
+        if ($node[1] -ge $Depth) { continue }
+        try { foreach ($d in [System.IO.Directory]::EnumerateDirectories($node[0])) { $stack.Push(@($d, ($node[1] + 1))) } }
+        catch { continue }   # unreadable folder: skip it
     }
-    $false
+}
+function Get-VsExtensionDirs {
+    # Where an install's VSIX extensions land: per machine below the install, per user in
+    # %LOCALAPPDATA%\Microsoft\VisualStudio\<major>.0_<instance id>.
+    param([object]$Install)
+    if ($Install.InstallPath) { Join-Path $Install.InstallPath 'Common7\IDE\Extensions' }
+    if ($Install.Id -and $env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "Microsoft\VisualStudio\$($Install.Major).0_$($Install.Id)\Extensions" }
 }
 function Get-VsCapabilities {
     # The workload extensions an install carries (SSRS, SSIS): those decide where an SSRS or SSIS
-    # project goes, wherever Visual Studio's version would otherwise send it.
+    # project goes, wherever Visual Studio's version would otherwise send it. The extension's own
+    # folder answers cheaply; the VSIX manifests are read (once per install) only when it does not.
     param([object]$Install)
+    $manifests = $null
     foreach ($w in $script:VsWorkloads) {
         if ($Install.InstallPath -and (Test-Path -LiteralPath (Join-Path $Install.InstallPath "Common7\IDE\CommonExtensions\Microsoft\$($w.Folder)"))) { $w.Cap; continue }
-        if (Test-VsUserExtension $Install $w.Manifest) { $w.Cap }
+        if ($null -eq $manifests) {
+            $manifests = @(foreach ($dir in @(Get-VsExtensionDirs $Install)) {
+                    foreach ($f in @(Find-VsManifests $dir)) { try { [System.IO.File]::ReadAllText($f) } catch { '' } }
+                })
+        }
+        foreach ($text in $manifests) { if ($text -match $w.Manifest) { $w.Cap; break } }
     }
 }
 function Find-VsInstalls {
@@ -265,11 +301,17 @@ function Find-VsInstalls {
     $list | Sort-Object Version -Descending
 }
 function Get-VsInstancesStamp {
-    # The Visual Studio Installer keeps a folder per instance here: adding or removing an
-    # install changes the folder's write time, which is how a stale cache gets noticed.
-    $dir = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Microsoft\VisualStudio\Packages\_Instances'
-    if (-not (Test-Path -LiteralPath $dir)) { return [long]0 }
-    ([DateTimeOffset](Get-Item -LiteralPath $dir).LastWriteTimeUtc).ToUnixTimeSeconds()
+    # The Visual Studio Installer keeps a folder per instance here, with a state.json it rewrites
+    # on every install, update and repair. The newest write time among those - and the folder's
+    # own, which moves when an instance comes or goes - is how a stale cache gets noticed. The
+    # folder alone missed updates within a major (17.12 -> 17.14).
+    param([string]$Dir = (Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'Microsoft\VisualStudio\Packages\_Instances'))
+    if (-not (Test-Path -LiteralPath $Dir)) { return [long]0 }
+    $newest = (Get-Item -LiteralPath $Dir).LastWriteTimeUtc
+    foreach ($s in @(Get-ChildItem -LiteralPath $Dir -Filter 'state.json' -Recurse -Depth 1 -File -ErrorAction SilentlyContinue)) {
+        if ($s.LastWriteTimeUtc -gt $newest) { $newest = $s.LastWriteTimeUtc }
+    }
+    ([DateTimeOffset]$newest).ToUnixTimeSeconds()
 }
 function Save-VsInstalls {
     param([object[]]$Installs)
@@ -309,9 +351,10 @@ function Get-VsInstalls {
     $found
 }
 function Select-VsNewest {
-    # Stable releases before previews, then the highest version.
+    # Stable releases before previews, then the highest version, then the biggest edition.
     param([object[]]$Installs)
-    $Installs | Sort-Object @{ Expression = { [bool]$_.Prerelease } }, @{ Expression = { $_.Version }; Descending = $true } | Select-Object -First 1
+    $rank = { $r = $script:VsEditionRank[[string]$_.Edition]; if ($null -eq $r) { 9 } else { $r } }
+    $Installs | Sort-Object @{ Expression = { [bool]$_.Prerelease } }, @{ Expression = { $_.Version }; Descending = $true }, @{ Expression = $rank } | Select-Object -First 1
 }
 function Test-VsInstallWord {
     param([object]$Install, [string]$Word)
@@ -452,11 +495,18 @@ function Get-VsRelativePath {
     if ($p.StartsWith($b + '\', [System.StringComparison]::OrdinalIgnoreCase)) { return $p.Substring($b.Length + 1) }
     $p
 }
+function Test-VsLinkDir {
+    # A junction or symbolic link: not followed, a link can loop or lead back into the tree. The
+    # ReparsePoint attribute alone does not tell - OneDrive's Files On-Demand folders carry it
+    # without being links - so it is only the reason to ask.
+    param([System.IO.DirectoryInfo]$Dir)
+    (Get-Item -LiteralPath $Dir.FullName -Force -ErrorAction SilentlyContinue).LinkType -in 'Junction', 'SymbolicLink'
+}
 function Find-VsFiles {
     # Breadth-first walk below Root, Depth folder levels deep, for files with one of the given
     # extensions. A folder that holds a match is not searched further down unless -All: the
     # solution at the top of a subtree is the one meant, the ones nested below it are its parts
-    # (backend\Backend.sln, not every backend\<service>\<service>.sln). Junctions are not followed.
+    # (backend\Backend.sln, not every backend\<service>\<service>.sln). Links are not followed.
     param([string]$Root, [string[]]$Extensions, [int]$Depth = 3, [switch]$All)
     $queue = New-Object System.Collections.Generic.Queue[object]
     $queue.Enqueue(@($Root, 0))
@@ -476,7 +526,7 @@ function Find-VsFiles {
         try {
             foreach ($d in $di.EnumerateDirectories()) {
                 if ($d.Name.StartsWith('.') -or $script:VsSkipDirs -contains $d.Name) { continue }
-                if ($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+                if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and (Test-VsLinkDir $d)) { continue }
                 $queue.Enqueue(@($d.FullName, ($level + 1)))
             }
         }
@@ -881,7 +931,12 @@ function Invoke-VsOpen {
         Open-VsOne (Get-VsTargetInfo (Get-Item -LiteralPath $Target -Force).FullName) $installs $Use $cfg.match $ask -Admin:$Admin
         return
     }
-    if ($Target -and -not (Test-Path -LiteralPath $Target)) { $filter = $Target; $Target = '' }
+    if ($Target -and -not (Test-Path -LiteralPath $Target)) {
+        # Something with a slash or a drive in it was meant as a path: say it is not there,
+        # rather than look for a solution by that name.
+        if ($Target -match '[\\/:]') { Write-Host "no such file or folder: $Target" -ForegroundColor Yellow; return }
+        $filter = $Target; $Target = ''
+    }
     $root = Resolve-VsRoot $Target
     if (-not $root) { return }
     if ($Folder) { Open-VsOne (Get-VsTargetInfo $root) $installs $Use $cfg.match $ask -Admin:$Admin; return }
@@ -896,9 +951,13 @@ function Invoke-VsOpen {
             Write-Host '  vs list -All shows every solution vs can see here' -ForegroundColor DarkGray
             return
         }
+        # An exact name wins outright (Backend over BackendTests), then a single literal hit,
+        # then a single loose one; anything else goes to the picker, filtered.
+        $exact = @($hits | Where-Object { $_.Name -eq $filter -or [System.IO.Path]::GetFileNameWithoutExtension($_.Name) -eq $filter })
         $needle = $filter.Replace(' ', '').ToLowerInvariant()
         $direct = @($hits | Where-Object { $_.Name.ToLowerInvariant().Contains($needle) })
-        if ($direct.Count -eq 1) { $items = $direct }
+        if ($exact.Count -eq 1) { $items = $exact }
+        elseif ($direct.Count -eq 1) { $items = $direct }
         elseif ($hits.Count -eq 1) { $items = $hits }
     }
     if (-not $items) {
@@ -983,7 +1042,7 @@ function Get-VsLatestRelease {
         }
         $req = [System.Net.HttpWebRequest]::Create("$script:ProjectUrl/releases/latest")
         $req.Method = 'HEAD'; $req.AllowAutoRedirect = $false; $req.Timeout = $TimeoutMs
-        $req.UserAgent = "PSVsCommand/$script:ModuleVersion"
+        $req.UserAgent = "PSVsCommand/$(Get-VsVersion)"
         $res = $req.GetResponse()
         try { $loc = [string]$res.Headers['Location'] } finally { $res.Close() }
         if ($loc -match '/tag/v?(\d+\.\d+\.\d+)$') { return [version]$Matches[1] }
@@ -1007,8 +1066,9 @@ function Update-VsCommand {
     if ($latest) { $state.latest = $latest.ToString() }
     Write-VsJson 'state.json' $state
     if (-not $latest) { Write-Host "could not reach GitHub, or there is no release yet - $script:ProjectUrl/releases" -ForegroundColor Yellow; return }
-    if ($latest -le $script:ModuleVersion) { Write-Host "vs $script:ModuleVersion is the latest release" -ForegroundColor Green; return }
-    Write-Host "vs $latest is out (you have $script:ModuleVersion)" -ForegroundColor Cyan
+    $have = Get-VsVersion
+    if ($latest -le $have) { Write-Host "vs $have is the latest release" -ForegroundColor Green; return }
+    Write-Host "vs $latest is out (you have $have)" -ForegroundColor Cyan
     $how = Get-VsInstallMethod
     switch ($how.Method) {
         'scoop' {
@@ -1062,15 +1122,16 @@ function Invoke-VsUpdateNotice {
         Write-VsJson 'state.json' $state
     }
     $v = $null
-    if (-not [version]::TryParse([string]$state.latest, [ref]$v) -or $v -le $script:ModuleVersion) { return }
+    $have = Get-VsVersion
+    if (-not [version]::TryParse([string]$state.latest, [ref]$v) -or $v -le $have) { return }
     if ($now - [long]$state.lastNotice -lt 86400) { return }
     $state.lastNotice = $now
     Write-VsJson 'state.json' $state
-    Write-Host "vs $v is out (you have $script:ModuleVersion) - update: $(Get-VsUpdateCommand (Get-VsInstallMethod))   (or: vs update)" -ForegroundColor Cyan
+    Write-Host "vs $v is out (you have $have) - update: $(Get-VsUpdateCommand (Get-VsInstallMethod))   (or: vs update)" -ForegroundColor Cyan
 }
 function Show-VsVersion {
     $how = Get-VsInstallMethod
-    Write-Host "vs $script:ModuleVersion" -ForegroundColor Green
+    Write-Host "vs $(Get-VsVersion)" -ForegroundColor Green
     Write-Host "  installed: $($how.Method) - $($how.Path)" -ForegroundColor DarkGray
     Write-Host "  PowerShell $($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))" -ForegroundColor DarkGray
 }
@@ -1147,8 +1208,9 @@ USAGE:
                             way 'code .' does
   vs <dir>                  search <dir> instead
   vs <file>                 open a .sln, .slnx, .slnf, project or any other file
-  vs <name>                 the solutions below here whose name matches: one is opened,
-                            several get the picker, filtered ('vs admin', 'vs bknd')
+  vs <name>                 the solutions below here whose name matches: an exact name or
+                            a single match is opened, several get the picker, filtered
+                            ('vs admin', 'vs bknd')
        -Use <vs>      open in that install: a year (2019), a major version (18), an
                       edition (Pro, Enterprise), an instance id, or 'preview'
        -All           also offer solutions nested below another solution's folder
@@ -1189,11 +1251,13 @@ NOTES:
     10 is honoured; everything else goes to the newest stable install. 'vs list' shows
     the choice and the reason for each solution.
   - installs come from vswhere (Visual Studio 2017 and newer), the registry (2015 and
-    older) or, without vswhere, the default install folders. They are cached and scanned
-    again when a cached devenv.exe is gone, when the Visual Studio Installer adds or
-    removes an instance, or on 'vs scan'.
+    older) or, without vswhere, the default install folders; Team Explorer and installs
+    an update left half done are left out. They are cached and scanned again when a
+    cached devenv.exe is gone, when the Visual Studio Installer adds, updates or removes
+    an instance, or on 'vs scan'.
   - the search skips dot-folders (.git, .vs, .claude worktrees), bin, obj, node_modules,
-    packages and TestResults, and does not follow junctions.
+    packages and TestResults, and does not follow junctions or symlinks (OneDrive
+    folders are searched).
   - a sub-command wins over a folder of the same name: 'vs .\list' searches .\list.
   - nothing goes online unless you ask: 'vs update' checks once, 'vs update notify on'
     daily. It is one HEAD request to GitHub's releases page; no telemetry.

@@ -248,6 +248,38 @@ Describe 'install scan' {
         }
     }
 
+    It 'leaves out Team Explorer and installs an update left half done' {
+        $te = New-FakeVs 'tttt2019' '16.11.1.0' 'Visual Studio Team Explorer 2019' -Edition TeamExplorer
+        $broken = New-FakeVs 'xxxx2022' '17.14.0.0' 'Visual Studio Enterprise 2022'
+        $broken | Add-Member isComplete $false
+        $stuck = New-FakeVs 'yyyy2022' '17.13.0.0' 'Visual Studio Professional 2022' -Edition Professional
+        $stuck | Add-Member isComplete $true
+        $stuck | Add-Member isLaunchable $false
+        $script:vswhereList = @($te, $broken, $stuck, $script:vs2026)
+        InModuleScope PSVsCommand { (@(Get-VsInstalls) | ForEach-Object { $_.Id }) | Should -Be @('bbbb2026') }
+    }
+
+    It 'finds an extension installed as a VSIX, per user or per machine, by its display name' {
+        $user = New-FakeVs 'uuuu2026' '18.1.0.0' 'Visual Studio Community 2026' -Edition Community
+        $machine = New-FakeVs 'mmmm2022' '17.14.0.0' 'Visual Studio Professional 2022' -Edition Professional
+        $appData = New-TestDir
+        # The real manifests: a bare GUID as identity, the product in the DisplayName.
+        $manifest = '<PackageManifest><Metadata><Identity Id="{0}" Version="1.0" /><DisplayName>{1}</DisplayName></Metadata></PackageManifest>'
+        New-TestFile (Join-Path $appData 'Microsoft\VisualStudio\18.0_uuuu2026\Extensions\k3j2h1\extension.vsixmanifest') ($manifest -f 'f1a2b3c4-0000-4000-8000-000000000001', 'Microsoft Reporting Services Projects') | Out-Null
+        New-TestFile (Join-Path $machine.installationPath 'Common7\IDE\Extensions\Microsoft\SSIS\1.0\extension.vsixmanifest') ($manifest -f 'f1a2b3c4-0000-4000-8000-000000000002', 'SQL Server Integration Services Projects 2022') | Out-Null
+        $script:vswhereList = @($user, $machine)
+        $saved = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $appData
+        try {
+            InModuleScope PSVsCommand {
+                $list = @(Get-VsInstalls)
+                ($list | Where-Object Id -EQ 'uuuu2026').Capabilities | Should -Be @('SSRS')
+                ($list | Where-Object Id -EQ 'mmmm2022').Capabilities | Should -Be @('SSIS')
+            }
+        }
+        finally { $env:LOCALAPPDATA = $saved }
+    }
+
     It 'falls back to the year map when the display name carries none' {
         InModuleScope PSVsCommand {
             $i = ConvertFrom-VsWhere ([pscustomobject]@{ instanceId = 'x'; displayName = 'Visual Studio Community'; installationVersion = '17.14.1.0'; productId = 'Microsoft.VisualStudio.Product.Community'; productPath = 'C:\x\devenv.exe'; installationPath = 'C:\x'; isPrerelease = $false; catalog = $null })
@@ -296,6 +328,21 @@ Describe 'install scan' {
             $list.Count | Should -Be 1
             $list[0].Edition | Should -Be 'Community'
             $list[0].Year | Should -Be '2022'
+        }
+    }
+}
+
+Describe 'install cache freshness' {
+    It 'notices an update within a major through the instances state.json' {
+        # Seen for real: the _Instances folder dated February, Visual Studio 2026 updated in July,
+        # and only its state.json moved.
+        $dir = New-TestDir
+        $state = New-TestFile (Join-Path $dir 'aaaa2019\state.json') '{}'
+        (Get-Item $dir).LastWriteTimeUtc = [datetime]'2026-02-02T08:00:00Z'
+        (Get-Item $state).LastWriteTimeUtc = [datetime]'2026-07-02T14:00:00Z'
+        InModuleScope PSVsCommand -Parameters @{ D = $dir } {
+            Get-VsInstancesStamp -Dir $D | Should -Be ([DateTimeOffset]'2026-07-02T14:00:00Z').ToUnixTimeSeconds()
+            Get-VsInstancesStamp -Dir (Join-Path $D 'missing') | Should -Be 0
         }
     }
 }
@@ -368,6 +415,17 @@ Describe 'which install opens what' {
         }
     }
 
+    It 'breaks a version tie by edition: Enterprise, Professional, Community' {
+        InModuleScope PSVsCommand {
+            $v = [version]'17.14.3.0'
+            $c = New-VsInstall -Id c -Edition Community -Version $v -Path 'C:\c\devenv.exe'
+            $e = New-VsInstall -Id e -Edition Enterprise -Version $v -Path 'C:\e\devenv.exe'
+            $p = New-VsInstall -Id p -Edition Professional -Version $v -Path 'C:\p\devenv.exe'
+            (Select-VsNewest @($c, $p, $e)).Id | Should -Be 'e'
+            (Select-VsNewest @($c, $p)).Id | Should -Be 'p'
+        }
+    }
+
     It 'prefers a stable release over a newer preview' {
         InModuleScope PSVsCommand -Parameters @{ I = $script:installs } {
             $preview = New-VsInstall -Id 'p' -Edition Enterprise -Version ([version]'19.0.1.0') -Path 'C:\p\devenv.exe' -Prerelease $true
@@ -392,6 +450,28 @@ Describe 'finding solutions' {
         New-Sln (Join-Path $script:repo 'tools\bin\Debug\Tool.sln') | Out-Null
         New-Sln (Join-Path $script:repo 'deep\a\b\c\Deep.sln') | Out-Null
         New-TestFile (Join-Path $script:repo 'scripts\Only.csproj') | Out-Null
+        # A junction into a folder outside the repo, holding a solution of its own.
+        $script:elsewhere = New-TestDir
+        New-Sln (Join-Path $script:elsewhere 'Linked.sln') | Out-Null
+        New-Item -ItemType Junction -Path (Join-Path $script:repo 'linked') -Target $script:elsewhere | Out-Null
+    }
+
+    It 'does not follow junctions' {
+        InModuleScope PSVsCommand -Parameters @{ R = $script:repo } {
+            (Find-VsCandidates $R 3 -All).Items.Name | Should -Not -Contain 'Linked.sln'
+            Test-VsLinkDir (Get-Item (Join-Path $R 'linked')) | Should -BeTrue
+            Test-VsLinkDir (Get-Item (Join-Path $R 'backend')) | Should -BeFalse
+        }
+    }
+
+    It 'searches a reparse-point folder that is not a link (OneDrive Files On-Demand)' {
+        # A placeholder folder cannot be made here; the junction stands in for one, with the
+        # link check saying what it says for OneDrive: not a link.
+        Mock -ModuleName PSVsCommand Test-VsLinkDir { $false }
+        InModuleScope PSVsCommand -Parameters @{ R = $script:repo } {
+            (Find-VsCandidates $R 3 -All).Items.Name | Should -Contain 'Linked.sln'
+        }
+        Should -Invoke -ModuleName PSVsCommand Test-VsLinkDir -Times 1 -Exactly
     }
 
     It 'offers the top solution of every subtree, not only the first one found' {
@@ -443,6 +523,7 @@ Describe 'vs (opening)' {
         $script:one = New-Sln (Join-Path $script:work 'one\Single App.sln')
         New-Sln (Join-Path $script:work 'two\admin-tools\AdminTools.sln') | Out-Null
         New-Sln (Join-Path $script:work 'two\backend\Backend.sln') | Out-Null
+        New-Sln (Join-Path $script:work 'two\backend-tests\BackendTests.sln') | Out-Null
         $script:reports = New-Sln (Join-Path $script:work 'reports\Reports.sln') -Extra '"Reports\Reports.rptproj"'
         New-Item -ItemType Directory -Force -Path (Join-Path $script:work 'empty') | Out-Null
     }
@@ -486,8 +567,27 @@ Describe 'vs (opening)' {
 
     It 'opens the one solution whose name matches' {
         Push-Location $script:work
-        try { Get-VsOutput { vs backend -Yes } | Should -Match 'opened Backend.sln' } finally { Pop-Location }
+        try { Get-VsOutput { vs admin -Yes } | Should -Match 'opened AdminTools.sln' } finally { Pop-Location }
         Should -Invoke -ModuleName PSVsCommand Start-VsProcess -Times 1 -Exactly
+    }
+
+    It 'lets an exact name win over longer names that contain it' {
+        Push-Location $script:work
+        try {
+            Get-VsOutput { vs backend -Yes } | Should -Match 'opened Backend.sln'
+            Get-VsOutput { vs BackendTests.sln -Yes } | Should -Match 'opened BackendTests.sln'
+            # No exact name, two literal hits: the choice is the user's.
+            Get-VsOutput { vs back -Yes } | Should -Match 'several found'
+        }
+        finally { Pop-Location }
+        Should -Invoke -ModuleName PSVsCommand Start-VsProcess -Times 2 -Exactly
+    }
+
+    It 'says a path is not there instead of searching for it as a name' {
+        $missing = Join-Path $script:work 'nope\Missing.sln'
+        Get-VsOutput { vs $missing -Yes } | Should -Match 'no such file or folder'
+        Get-VsOutput { vs .\nope -Yes } | Should -Match 'no such file or folder'
+        Should -Invoke -ModuleName PSVsCommand Start-VsProcess -Times 0 -Exactly
     }
 
     It 'lists several matches instead of guessing when there is no console for the picker' {
