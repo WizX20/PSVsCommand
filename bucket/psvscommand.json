@@ -16,9 +16,8 @@
     "if (($env:PSModulePath -split ';') -notcontains $mods) { $env:PSModulePath = \"$mods;$env:PSModulePath\" }"
   ],
   "post_uninstall": [
-    "Remove-Module PSVsCommand -Force -ErrorAction SilentlyContinue",
-    "$profilePath = $PROFILE.CurrentUserAllHosts",
-    "if ((Test-Path $profilePath) -and (Select-String -Path $profilePath -Pattern 'Import-Module\\s+PSVsCommand\\b' -Quiet)) { Write-Host \"Gone for good? The 'Import-Module PSVsCommand' line in $profilePath can go too - harmless until then (-ErrorAction SilentlyContinue).\" }"
+    "# Runs on every update too, so it says nothing: a leftover profile line is harmless (README -> Uninstall).",
+    "Remove-Module PSVsCommand -Force -ErrorAction SilentlyContinue"
   ],
   "checkver": "github",
   "autoupdate": {

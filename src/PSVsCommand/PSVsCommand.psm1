@@ -1084,10 +1084,14 @@ function Get-VsInstallMethod {
     }
     $r
 }
+# Scoop refreshes its copy of a bucket only on a bare `scoop update` (or once its last one is a few
+# hours old): right after a release, `scoop update psvscommand` alone still reads the old manifest
+# and calls the old version the latest.
+$script:VsScoopUpdate = 'scoop update; scoop update psvscommand'
 function Get-VsUpdateCommand {
     param([object]$How)
     switch ($How.Method) {
-        'scoop' { if ($How.Global) { 'scoop update psvscommand --global (as administrator)' } else { 'scoop update psvscommand' } }
+        'scoop' { if ($How.Global) { "$script:VsScoopUpdate --global (as administrator)" } else { $script:VsScoopUpdate } }
         'checkout' { "git -C '$($How.Clone)' pull" }
         default { 'vs update' }
     }
@@ -1113,10 +1117,19 @@ function Get-VsLatestRelease {
 }
 function Invoke-VsScoopUpdate {
     # In a child process: Scoop runs in-process in PowerShell, and its uninstall step would
-    # unload the very module that is calling it.
+    # unload the very module that is calling it. -EncodedCommand keeps the ';' in one piece.
     $exe = if (Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }
-    $p = Start-Process -FilePath $exe -ArgumentList '-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', 'scoop update psvscommand' -NoNewWindow -Wait -PassThru
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($script:VsScoopUpdate))
+    $p = Start-Process -FilePath $exe -ArgumentList "-NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded" -NoNewWindow -Wait -PassThru
     $p.ExitCode
+}
+function Get-VsScoopInstalledVersion {
+    # The version in apps\psvscommand\current - after an update, what Scoop really installed.
+    param([object]$How)
+    $app = $How.Path -replace '(?i)([\\/]apps[\\/]psvscommand)([\\/].*)?$', '$1'
+    $psd1 = Join-Path $app 'current\PSVsCommand.psd1'
+    if (-not (Test-Path -LiteralPath $psd1)) { return $null }
+    try { [version](Import-PowerShellDataFile -LiteralPath $psd1).ModuleVersion } catch { $null }
 }
 function Update-VsCommand {
     param([switch]$Yes)
@@ -1134,16 +1147,19 @@ function Update-VsCommand {
     switch ($how.Method) {
         'scoop' {
             if ($how.Global) {
-                Write-Host 'this is a global Scoop install - from an elevated shell: scoop update psvscommand --global' -ForegroundColor DarkGray
+                Write-Host "this is a global Scoop install - from an elevated shell: $script:VsScoopUpdate --global" -ForegroundColor DarkGray
                 return
             }
-            if (-not $Yes -and (Read-Host 'run scoop update psvscommand now? [y/N]').Trim().ToLowerInvariant() -notin 'y', 'yes') {
-                Write-Host 'later: scoop update psvscommand' -ForegroundColor DarkGray
+            if (-not $Yes -and (Read-Host "run '$script:VsScoopUpdate' now? [y/N]").Trim().ToLowerInvariant() -notin 'y', 'yes') {
+                Write-Host "later: $script:VsScoopUpdate" -ForegroundColor DarkGray
                 return
             }
             $code = Invoke-VsScoopUpdate
-            if ($code -eq 0) { Write-Host 'updated - new shells have it; for this one: Import-Module PSVsCommand -Force' -ForegroundColor Green }
-            else { Write-VsFail "scoop update psvscommand failed (exit code $code)" Red }
+            # Scoop's exit code says little ("latest version" is a success too): what is installed now?
+            $now = Get-VsScoopInstalledVersion $how
+            if ($now -and $now -ge $latest) { Write-Host "updated to $now - new shells have it; for this one: Import-Module PSVsCommand -Force" -ForegroundColor Green }
+            elseif ($code -ne 0) { Write-VsFail "'$script:VsScoopUpdate' failed (exit code $code)" Red }
+            else { Write-VsFail "Scoop still has $now installed, not $latest - try again in a minute: $script:VsScoopUpdate" }
         }
         'checkout' {
             Write-Host "this copy is a git checkout - update it yourself: git -C '$($how.Clone)' pull" -ForegroundColor DarkGray
@@ -1325,7 +1341,8 @@ USAGE:
        depth    3          folder levels to search below (1-8)
        confirm  on|off     ask before opening a single match
   vs update                 ask GitHub for the latest release and say how to update -
-                            with Scoop it offers to run 'scoop update psvscommand'
+                            with Scoop it offers to run 'scoop update; scoop update
+                            psvscommand' and checks what got installed
   vs update notify on|off   opt in to (or out of) a check at most once a day
   vs version                version, how it was installed, where it runs from
   vs install profile        add 'Import-Module PSVsCommand' to your PowerShell profile:
