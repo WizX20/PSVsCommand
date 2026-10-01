@@ -94,7 +94,7 @@ In the picker: Up/Down, Enter to open, type to filter, Tab to send the highlight
 
 | The solution… | goes to |
 |---|---|
-| has an SSRS (`.rptproj`) or SSIS (`.dtproj`) project — by path or, in old SSRS solutions, by project type GUID alone | an install with that extension (found under `Common7\IDE\CommonExtensions\Microsoft`, or as a per-user VSIX) |
+| has an SSRS (`.rptproj`) or SSIS (`.dtproj`) project — by path or, in old SSRS solutions, by project type GUID alone | an install with that extension (found under `Common7\IDE\CommonExtensions\Microsoft`, or as a VSIX installed per user or per machine) |
 | is an `.slnx`, or declares a `MinimumVisualStudioVersion` above 10 | an install at least that new |
 | anything else | the newest stable install |
 
@@ -115,8 +115,9 @@ USAGE:
                             way 'code .' does
   vs <dir>                  search <dir> instead
   vs <file>                 open a .sln, .slnx, .slnf, project or any other file
-  vs <name>                 the solutions below here whose name matches: one is opened,
-                            several get the picker, filtered ('vs admin', 'vs bknd')
+  vs <name>                 the solutions below here whose name matches: an exact name or
+                            a single match is opened, several get the picker, filtered
+                            ('vs admin', 'vs bknd')
        -Use <vs>      open in that install: a year (2019), a major version (18), an
                       edition (Pro, Enterprise), an instance id, or 'preview'
        -All           also offer solutions nested below another solution's folder
@@ -157,11 +158,13 @@ NOTES:
     10 is honoured; everything else goes to the newest stable install. 'vs list' shows
     the choice and the reason for each solution.
   - installs come from vswhere (Visual Studio 2017 and newer), the registry (2015 and
-    older) or, without vswhere, the default install folders. They are cached and scanned
-    again when a cached devenv.exe is gone, when the Visual Studio Installer adds or
-    removes an instance, or on 'vs scan'.
+    older) or, without vswhere, the default install folders; Team Explorer and installs
+    an update left half done are left out. They are cached and scanned again when a
+    cached devenv.exe is gone, when the Visual Studio Installer adds, updates or removes
+    an instance, or on 'vs scan'.
   - the search skips dot-folders (.git, .vs, .claude worktrees), bin, obj, node_modules,
-    packages and TestResults, and does not follow junctions.
+    packages and TestResults, and does not follow junctions or symlinks (OneDrive
+    folders are searched).
   - a sub-command wins over a folder of the same name: 'vs .\list' searches .\list.
   - nothing goes online unless you ask: 'vs update' checks once, 'vs update notify on'
     daily. It is one HEAD request to GitHub's releases page; no telemetry.
