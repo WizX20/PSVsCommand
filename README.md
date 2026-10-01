@@ -56,7 +56,7 @@ That line also makes `vs` resolve to the module before anything else named `vs` 
 
 Through the shim — from cmd, Git Bash or a script — `vs` exits with 1 when nothing was found, opened or changed as asked, so `vs Backend.sln || echo failed` works.
 
-Update with `vs update` (or `scoop update psvscommand`).
+Update with `vs update` (or `scoop update; scoop update psvscommand` — the bare `scoop update` refreshes the bucket, without it Scoop can miss a release that is only minutes old).
 
 ### Windows — winget
 
@@ -140,7 +140,8 @@ USAGE:
        depth    3          folder levels to search below (1-8)
        confirm  on|off     ask before opening a single match
   vs update                 ask GitHub for the latest release and say how to update -
-                            with Scoop it offers to run 'scoop update psvscommand'
+                            with Scoop it offers to run 'scoop update; scoop update
+                            psvscommand' and checks what got installed
   vs update notify on|off   opt in to (or out of) a check at most once a day
   vs version                version, how it was installed, where it runs from
   vs install profile        add 'Import-Module PSVsCommand' to your PowerShell profile:
@@ -189,7 +190,7 @@ NOTES:
 
 `vs` never goes online on its own. `vs update` checks once, when you type it; `vs update notify on` lets it check at most once a day — in a hidden background process, so no command ever waits for GitHub — and print one line after a later command when a newer release is out (`vs update notify off` stops that and the weekly reminder that the option exists). The check is a single HEAD request to `https://github.com/WizX20/PSVsCommand/releases/latest` — GitHub sees an IP address and a user agent, nothing else is sent.
 
-`vs update` knows how `vs` was installed: with Scoop it offers to run `scoop update psvscommand` (in a child process, so the update can replace the module that is running; a global install gets the command to run from an elevated shell instead), in a git checkout it tells you to `git pull`, and for a manual install it points at the download.
+`vs update` knows how `vs` was installed: with Scoop it offers to run `scoop update; scoop update psvscommand` (in a child process, so the update can replace the module that is running; a global install gets the command to run from an elevated shell instead) and then checks which version Scoop really installed, in a git checkout it tells you to `git pull`, and for a manual install it points at the download.
 
 ## Uninstall
 

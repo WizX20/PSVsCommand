@@ -6,6 +6,13 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+### Fixed
+
+- `vs update` no longer says "updated" while Scoop kept the old version: it refreshes the bucket first
+  (`scoop update; scoop update psvscommand` — minutes after a release Scoop's copy of the bucket can still be the old
+  one) and then reads the version Scoop really installed. The update notice names the same command.
+- A Scoop update no longer prints the "Gone for good?" uninstall hint: the hook runs on every update too.
+
 ## [1.0.1] - 2026-10-01
 
 ### Fixed

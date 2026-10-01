@@ -811,7 +811,7 @@ Describe 'updates' {
         finally { $env:SCOOP_GLOBAL = $saved }
         Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\ProgramData\scoop\apps\psvscommand\current'; Clone = ''; Global = $true } }
         Mock -ModuleName PSVsCommand Invoke-VsScoopUpdate { 0 }
-        Get-VsOutput { vs update -Yes } | Should -Match 'elevated shell: scoop update psvscommand --global'
+        Get-VsOutput { vs update -Yes } | Should -Match 'elevated shell: scoop update; scoop update psvscommand --global'
         Should -Invoke -ModuleName PSVsCommand Invoke-VsScoopUpdate -Times 0 -Exactly
     }
 
@@ -824,14 +824,51 @@ Describe 'updates' {
         Should -Invoke -ModuleName PSVsCommand Invoke-VsScoopUpdate -Times 0 -Exactly
     }
 
-    It 'vs update with Scoop asks, then runs scoop update in a child process' {
-        Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\s'; Clone = ''; Global = $false } }
+    It 'vs update with Scoop asks, then refreshes the bucket and updates in a child process' {
+        Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\s\apps\psvscommand\current'; Clone = ''; Global = $false } }
         Mock -ModuleName PSVsCommand Invoke-VsScoopUpdate { 0 }
+        Mock -ModuleName PSVsCommand Get-VsScoopInstalledVersion { [version]'99.0.0' }
         Mock -ModuleName PSVsCommand Read-Host { 'n' }
-        Get-VsOutput { vs update } | Should -Match 'later: scoop update psvscommand'
+        Get-VsOutput { vs update } | Should -Match 'later: scoop update; scoop update psvscommand'
         Should -Invoke -ModuleName PSVsCommand Invoke-VsScoopUpdate -Times 0 -Exactly
-        Get-VsOutput { vs update -Yes } | Should -Match 'updated'
+        Get-VsOutput { vs update -Yes } | Should -Match 'updated to 99\.0\.0'
         Should -Invoke -ModuleName PSVsCommand Invoke-VsScoopUpdate -Times 1 -Exactly
+    }
+
+    It 'vs update does not claim success when Scoop kept the old version (a stale bucket)' {
+        # Seen for real minutes after the v1.0.1 release: "psvscommand: 1.0.0 (latest version)",
+        # exit code 0, and vs said "updated".
+        Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\s\apps\psvscommand\current'; Clone = ''; Global = $false } }
+        Mock -ModuleName PSVsCommand Invoke-VsScoopUpdate { 0 }
+        Mock -ModuleName PSVsCommand Get-VsScoopInstalledVersion { [version]'1.0.0' }
+        $out = Get-VsOutput { vs update -Yes }
+        $out | Should -Not -Match 'updated to'
+        $out | Should -Match 'Scoop still has 1\.0\.0 installed, not 99\.0\.0'
+        InModuleScope PSVsCommand { $script:VsExitCode } | Should -Be 1
+    }
+
+    It 'reads the version Scoop has in apps\psvscommand\current, from any folder of the install' {
+        $app = Join-Path (New-TestDir) 'scoop\apps\psvscommand'
+        New-TestFile (Join-Path $app 'current\PSVsCommand.psd1') "@{ ModuleVersion = '1.0.1' }" | Out-Null
+        InModuleScope PSVsCommand -Parameters @{ App = $app } {
+            Get-VsScoopInstalledVersion ([pscustomobject]@{ Path = (Join-Path $App 'current') }) | Should -Be ([version]'1.0.1')
+            Get-VsScoopInstalledVersion ([pscustomobject]@{ Path = (Join-Path $App '1.0.0') }) | Should -Be ([version]'1.0.1')
+            Get-VsScoopInstalledVersion ([pscustomobject]@{ Path = (Join-Path (Split-Path $App) 'other') }) | Should -BeNullOrEmpty
+        }
+    }
+
+    It 'runs the bucket refresh and the update in one child, through -EncodedCommand' {
+        Mock -ModuleName PSVsCommand Start-Process { [pscustomobject]@{ ExitCode = 0 } }
+        InModuleScope PSVsCommand { Invoke-VsScoopUpdate } | Should -Be 0
+        Should -Invoke -ModuleName PSVsCommand Start-Process -Times 1 -Exactly -ParameterFilter {
+            $encoded = ([string]$ArgumentList) -replace '^.*-EncodedCommand\s+', ''
+            [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded)) -eq 'scoop update; scoop update psvscommand'
+        }
+    }
+
+    It 'leaves the uninstall hook silent: it runs on every update too' {
+        $manifest = Get-Content (Join-Path (Split-Path $PSScriptRoot -Parent) 'bucket\psvscommand.json') -Raw | ConvertFrom-Json
+        ($manifest.post_uninstall -join "`n") | Should -Not -Match 'Write-Host'
     }
 
     It 'vs update says when this is the latest, and when GitHub cannot be reached' {
