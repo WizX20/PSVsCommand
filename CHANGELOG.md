@@ -6,6 +6,8 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-10-01
+
 ### Fixed
 
 - Solutions in folders under OneDrive (Files On-Demand) are found: the search skipped every folder with the
