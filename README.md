@@ -52,7 +52,9 @@ Opening Visual Studio needs no `cd`, so the shim does everything the PowerShell 
 vs install profile     # adds: Import-Module PSVsCommand -ErrorAction SilentlyContinue
 ```
 
-That line also makes `vs` resolve to the module before anything else named `vs` on your PATH (an older `vs.ps1` script, say).
+That line also makes `vs` resolve to the module before anything else named `vs` on your PATH (an older `vs.ps1` script, say). It goes into the profile of the PowerShell you run it from; if you use both PowerShell 7 and Windows PowerShell 5.1, run it once in each.
+
+Through the shim — from cmd, Git Bash or a script — `vs` exits with 1 when nothing was found, opened or changed as asked, so `vs Backend.sln || echo failed` works.
 
 Update with `vs update` (or `scoop update psvscommand`).
 
@@ -94,7 +96,7 @@ In the picker: Up/Down, Enter to open, type to filter, Tab to send the highlight
 
 | The solution… | goes to |
 |---|---|
-| has an SSRS (`.rptproj`) or SSIS (`.dtproj`) project — by path or, in old SSRS solutions, by project type GUID alone | an install with that extension (found under `Common7\IDE\CommonExtensions\Microsoft`, or as a VSIX installed per user or per machine) |
+| has an SSRS (`.rptproj`), SSIS (`.dtproj`) or SSAS (`.smproj`, `.dwproj`) project — by path or, in old SSRS solutions, by project type GUID alone | an install with that extension (found under `Common7\IDE\CommonExtensions\Microsoft`, or as a VSIX installed per user or per machine) |
 | is an `.slnx`, or declares a `MinimumVisualStudioVersion` above 10 | an install at least that new |
 | anything else | the newest stable install |
 
@@ -114,7 +116,8 @@ USAGE:
   vs .                      open this folder itself in Visual Studio (Open Folder), the
                             way 'code .' does
   vs <dir>                  search <dir> instead
-  vs <file>                 open a .sln, .slnx, .slnf, project or any other file
+  vs <file>                 open a .sln, .slnx, .slnf or project in a Visual Studio of its
+                            own; any other file in one that is already running (/Edit)
   vs <name>                 the solutions below here whose name matches: an exact name or
                             a single match is opened, several get the picker, filtered
                             ('vs admin', 'vs bknd')
@@ -153,21 +156,30 @@ PICKER:
   Enter, Tab and Esc the same way.
 
 NOTES:
-  - which install: an SSRS (.rptproj) or SSIS (.dtproj) project goes to an install with
-    that extension; an .slnx needs 17.13 or newer, and a MinimumVisualStudioVersion above
-    10 is honoured; everything else goes to the newest stable install. 'vs list' shows
-    the choice and the reason for each solution.
+  - which install: an SSRS (.rptproj), SSIS (.dtproj) or SSAS (.smproj, .dwproj) project
+    goes to an install with that extension; an .slnx needs 17.13 or newer, and a
+    MinimumVisualStudioVersion above 10 is honoured; everything else goes to the newest
+    stable install. 'vs list' shows the choice and the reason for each solution.
   - installs come from vswhere (Visual Studio 2017 and newer), the registry (2015 and
     older) or, without vswhere, the default install folders; Team Explorer and installs
     an update left half done are left out. They are cached and scanned again when a
     cached devenv.exe is gone, when the Visual Studio Installer adds, updates or removes
     an instance, or on 'vs scan'.
-  - the search skips dot-folders (.git, .vs, .claude worktrees), bin, obj, node_modules,
-    packages and TestResults, and does not follow junctions or symlinks (OneDrive
-    folders are searched).
+  - the search skips dot-folders (.git, .vs, .claude worktrees), hidden folders
+    (AppData), bin, obj, node_modules, packages, artifacts, dist and TestResults - at a
+    drive root also Windows and the program folders - and does not follow junctions or
+    symlinks (OneDrive folders are searched).
   - a sub-command wins over a folder of the same name: 'vs .\list' searches .\list.
+  - 'install profile' writes $PROFILE.CurrentUserAllHosts of the PowerShell running it:
+    run it once in each edition you use (pwsh, Windows PowerShell 5.1).
+  - through vs.ps1 - the Scoop shim in cmd, Git Bash or a script - vs exits with 1 when
+    nothing was found, opened or changed as asked, else 0.
+  - the picker and the confirm need a console: PowerShell or Git Bash in Windows Terminal
+    have one. Git Bash in its own window (mintty) hands vs pipes instead, so there it
+    prints the list - open one with 'vs <name>'.
   - nothing goes online unless you ask: 'vs update' checks once, 'vs update notify on'
-    daily. It is one HEAD request to GitHub's releases page; no telemetry.
+    daily, in the background - its answer shows after a later command. It is one HEAD
+    request to GitHub's releases page; no telemetry.
   - settings and caches: C:\Users\you\AppData\Local\PSVsCommand
   - module: C:\Users\you\scoop\apps\psvscommand\current
   - project: https://github.com/WizX20/PSVsCommand
@@ -175,9 +187,9 @@ NOTES:
 
 ## Updates and privacy
 
-`vs` never goes online on its own. `vs update` checks once, when you type it; `vs update notify on` lets it check at most once a day, after a command, and print one line when a newer release is out (`vs update notify off` stops that and the weekly reminder that the option exists). The check is a single HEAD request to `https://github.com/WizX20/PSVsCommand/releases/latest` — GitHub sees an IP address and a user agent, nothing else is sent.
+`vs` never goes online on its own. `vs update` checks once, when you type it; `vs update notify on` lets it check at most once a day — in a hidden background process, so no command ever waits for GitHub — and print one line after a later command when a newer release is out (`vs update notify off` stops that and the weekly reminder that the option exists). The check is a single HEAD request to `https://github.com/WizX20/PSVsCommand/releases/latest` — GitHub sees an IP address and a user agent, nothing else is sent.
 
-`vs update` knows how `vs` was installed: with Scoop it offers to run `scoop update psvscommand` (in a child process, so the update can replace the module that is running), in a git checkout it tells you to `git pull`, and for a manual install it points at the download.
+`vs update` knows how `vs` was installed: with Scoop it offers to run `scoop update psvscommand` (in a child process, so the update can replace the module that is running; a global install gets the command to run from an elevated shell instead), in a git checkout it tells you to `git pull`, and for a manual install it points at the download.
 
 ## Uninstall
 

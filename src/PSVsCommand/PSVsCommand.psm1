@@ -35,14 +35,21 @@ $script:VsYears = @{ 10 = '2010'; 11 = '2012'; 12 = '2013'; 14 = '2015'; 15 = '2
 $script:VsWorkloads = @(
     @{ Cap = 'SSRS'; Label = 'Reporting Services'; Extensions = @('.rptproj'); Guids = @('{F14B399A-7131-4C87-9E4B-1186C45EF12D}'); Folder = 'SSRS'; Manifest = '<DisplayName>[^<]*Reporting\s*Services' }
     @{ Cap = 'SSIS'; Label = 'Integration Services'; Extensions = @('.dtproj'); Guids = @(); Folder = 'SSIS'; Manifest = '<DisplayName>[^<]*Integration\s*Services' }
+    @{ Cap = 'SSAS'; Label = 'Analysis Services'; Extensions = @('.smproj', '.dwproj'); Guids = @(); Folder = 'SSAS'; Manifest = '<DisplayName>[^<]*Analysis\s*Services' }
 )
 # Rank on equal versions: the edition with the most in it first.
 $script:VsEditionRank = @{ Enterprise = 0; Professional = 1; Community = 2 }
 $script:VsSolutionExtensions = @('.sln', '.slnx')
-$script:VsProjectExtensions = @('.csproj', '.vbproj', '.fsproj', '.vcxproj', '.sqlproj', '.rptproj', '.dtproj')
+$script:VsProjectExtensions = @('.csproj', '.vbproj', '.fsproj', '.vcxproj', '.sqlproj', '.rptproj', '.dtproj', '.smproj', '.dwproj')
 # Never worth a look. Every dot-folder is skipped as well (.git, .vs, .idea), which also keeps the
-# copies of the repo in git worktrees under .claude/worktrees or .worktrees out of the list.
-$script:VsSkipDirs = @('node_modules', 'bin', 'obj', 'packages', 'TestResults')
+# copies of the repo in git worktrees under .claude/worktrees or .worktrees out of the list, and so
+# is every hidden folder (AppData, ProgramData, $Recycle.Bin).
+$script:VsSkipDirs = @('node_modules', 'bin', 'obj', 'packages', 'TestResults', 'artifacts', 'dist')
+# At a drive root only: nobody keeps solutions there, and walking them costs seconds.
+$script:VsDriveRootSkipDirs = @('Windows', 'Program Files', 'Program Files (x86)', 'PerfLogs', 'Recovery')
+# 1 once something did not happen as asked (nothing found, cancelled, a refused value); vs.ps1
+# exits with it, so cmd, bash and scripts can tell. Reset by every `vs` call.
+$script:VsExitCode = 0
 # The XML solution format opens from Visual Studio 2022 17.13 on.
 $script:SlnxMinVersion = [version]'17.13'
 $script:VsCommands = @('list', 'installs', 'scan', 'config', 'update', 'version', 'install', 'uninstall', 'help')
@@ -81,6 +88,12 @@ function ConvertTo-VsHashtable {
     $h
 }
 function Get-VsNow { [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+function Write-VsFail {
+    # Says what did not happen as asked, and makes the exit code of vs.ps1 say so too.
+    param([string]$Message, [string]$Color = 'Yellow')
+    $script:VsExitCode = 1
+    Write-Host $Message -ForegroundColor $Color
+}
 function Get-VsVersion {
     # The module's own version, looked up when needed: reading the manifest at load time cost
     # every shell with the profile line ~200 ms. Loaded without its manifest the module has no
@@ -91,8 +104,14 @@ function Get-VsVersion {
 }
 
 # --- settings -------------------------------------------------------------------------------
+$script:VsConfigCache = $null
 function Get-VsConfig {
     # Saved values over the defaults; a value the file should not hold reads as the default.
+    # Parsed once per version of the file: one `vs` call asks several times.
+    $path = Join-Path (Get-VsHome) 'config.json'
+    $stamp = [System.IO.File]::GetLastWriteTimeUtc($path).Ticks
+    $c = $script:VsConfigCache
+    if ($c -and $c.Path -eq $path -and $c.Stamp -eq $stamp) { return $c.Value }
     $saved = ConvertTo-VsHashtable (Read-VsJson 'config.json')
     $cfg = [ordered]@{}
     foreach ($k in $script:VsConfigKeys.Keys) {
@@ -100,12 +119,13 @@ function Get-VsConfig {
         if ($v -and $script:VsConfigKeys[$k].Values -contains $v) { $cfg[$k] = $v.ToLowerInvariant() }
         else { $cfg[$k] = $script:VsConfigKeys[$k].Default }
     }
+    $script:VsConfigCache = @{ Path = $path; Stamp = $stamp; Value = $cfg }
     $cfg
 }
 function Set-VsConfigValue {
     param([string]$Key, [string]$Value)
     $k = @($script:VsConfigKeys.Keys) | Where-Object { $_ -eq $Key } | Select-Object -First 1
-    if (-not $k) { Write-Host "unknown setting '$Key' - one of: $(@($script:VsConfigKeys.Keys) -join ', ')" -ForegroundColor Yellow; return }
+    if (-not $k) { Write-VsFail "unknown setting '$Key' - one of: $(@($script:VsConfigKeys.Keys) -join ', ')"; return }
     $spec = $script:VsConfigKeys[$k]
     $saved = ConvertTo-VsHashtable (Read-VsJson 'config.json')
     if ($Value -in 'default', 'reset') {
@@ -116,7 +136,7 @@ function Set-VsConfigValue {
         return
     }
     $v = $spec.Values | Where-Object { $_ -eq $Value } | Select-Object -First 1
-    if (-not $v) { Write-Host "'$Value' is not a value for $k - one of: $($spec.Values -join ', '), default" -ForegroundColor Yellow; return }
+    if (-not $v) { Write-VsFail "'$Value' is not a value for $k - one of: $($spec.Values -join ', '), default"; return }
     $saved[$k] = $v
     Write-VsJson 'config.json' $saved
     Write-Host "$k = $v" -ForegroundColor Green
@@ -324,10 +344,13 @@ function Save-VsInstalls {
     Write-VsJson 'installs.json' ([ordered]@{ scannedAt = Get-VsNow; installs = $rows })
 }
 function Read-VsInstallCache {
-    $c = Read-VsJson 'installs.json'
-    if (-not $c -or -not $c.installs) { return }
-    foreach ($r in $c.installs) {
+    # The cached installs; -Cache takes installs.json already parsed. Only a devenv.exe is taken
+    # from it: the file says what gets started, so an edited path is not run.
+    param([object]$Cache = (Read-VsJson 'installs.json'))
+    if (-not $Cache -or -not $Cache.installs) { return }
+    foreach ($r in $Cache.installs) {
         $v = $null
+        if ([System.IO.Path]::GetFileName([string]$r.Path) -ne 'devenv.exe') { continue }
         if (-not [version]::TryParse([string]$r.Version, [ref]$v)) { continue }
         $p = @{
             Id = [string]$r.Id; Name = [string]$r.Name; Year = [string]$r.Year; Edition = [string]$r.Edition; Version = $v; Display = [string]$r.Display
@@ -342,19 +365,31 @@ function Get-VsInstalls {
     param([switch]$Refresh)
     if (-not $Refresh) {
         $c = Read-VsJson 'installs.json'
-        $cached = @(Read-VsInstallCache)
+        $cached = @(Read-VsInstallCache $c)
         $fresh = $c -and ([long]$c.scannedAt -ge (Get-VsInstancesStamp))
-        if ($cached -and $fresh -and -not ($cached | Where-Object { -not (Test-Path -LiteralPath $_.Path) })) { return $cached }
+        if ($cached -and $fresh -and -not $cached.Where({ -not [System.IO.File]::Exists($_.Path) })) { return $cached }
     }
     $found = @(Find-VsInstalls)
     Save-VsInstalls $found
     $found
 }
 function Select-VsNewest {
-    # Stable releases before previews, then the highest version, then the biggest edition.
+    # Stable releases before previews, then the highest version, then the biggest edition. One
+    # pass, no Sort-Object: this runs for every row of a list.
     param([object[]]$Installs)
-    $rank = { $r = $script:VsEditionRank[[string]$_.Edition]; if ($null -eq $r) { 9 } else { $r } }
-    $Installs | Sort-Object @{ Expression = { [bool]$_.Prerelease } }, @{ Expression = { $_.Version }; Descending = $true }, @{ Expression = $rank } | Select-Object -First 1
+    $best = $null; $bestRank = 0
+    foreach ($i in $Installs) {
+        if (-not $i) { continue }
+        $rank = $script:VsEditionRank[[string]$i.Edition]
+        if ($null -eq $rank) { $rank = 9 }
+        $better = $false
+        if (-not $best) { $better = $true }
+        elseif ([bool]$i.Prerelease -ne [bool]$best.Prerelease) { $better = -not $i.Prerelease }
+        elseif ($i.Version -ne $best.Version) { $better = $i.Version -gt $best.Version }
+        else { $better = $rank -lt $bestRank }
+        if ($better) { $best = $i; $bestRank = $rank }
+    }
+    $best
 }
 function Test-VsInstallWord {
     param([object]$Install, [string]$Word)
@@ -368,11 +403,11 @@ function Resolve-VsInstall {
     # -Use <spec>: every word must fit - a year (2019), a major version (16), an edition (Pro,
     # Enterprise: a prefix will do), an instance id, or 'preview'. Newest of the fits.
     param([string]$Spec, [object[]]$Installs)
-    $words = @($Spec -split '[\s,]+' | Where-Object { $_ })
-    $fits = @($Installs | Where-Object {
-            $i = $_
-            -not ($words | Where-Object { -not (Test-VsInstallWord $i $_) })
-        })
+    $words = @(($Spec -split '[\s,]+').Where({ $_ }))
+    $fits = @(@($Installs).Where({
+                $i = $_
+                -not $words.Where({ -not (Test-VsInstallWord $i $_) })
+            }))
     if ($fits) { Select-VsNewest $fits }
 }
 
@@ -439,7 +474,7 @@ function Get-VsTargetInfo {
         }
         default {
             if ($script:VsProjectExtensions -contains $ext) { $info.Kind = 'project' }
-            $info.Needs = @($script:VsWorkloads | Where-Object { $_.Extensions -contains $ext } | ForEach-Object { $_.Cap })
+            $info.Needs = @($script:VsWorkloads.Where({ $_.Extensions -contains $ext }) | ForEach-Object { $_.Cap })
         }
     }
     $info
@@ -461,7 +496,7 @@ function Select-VsInstall {
     # without an extension still opens it, minus the projects that need the extension.
     if ($Info.MinVersion) {
         $min = "$($Info.MinVersion.Major).$($Info.MinVersion.Minor)"
-        $fit = @($pool | Where-Object { $_.Version -ge $Info.MinVersion })
+        $fit = @($pool.Where({ $_.Version -ge $Info.MinVersion }))
         if ($fit) {
             if ($fit.Count -lt $pool.Count) { $why += "needs $min or newer" }
             $pool = $fit
@@ -469,13 +504,13 @@ function Select-VsInstall {
         else { $r.Warning = "'$($Info.Name)' needs Visual Studio $min or newer - none installed" }
     }
     foreach ($cap in $Info.Needs) {
-        $w = $script:VsWorkloads | Where-Object { $_.Cap -eq $cap } | Select-Object -First 1
-        $fit = @($pool | Where-Object { $_.Capabilities -contains $cap })
+        $w = $script:VsWorkloads.Where({ $_.Cap -eq $cap }, 'First')[0]
+        $fit = @($pool.Where({ $_.Capabilities -contains $cap }))
         if ($fit) { $pool = $fit; $why += "$cap project, needs the $($w.Label) extension" }
         else { $r.Warning = "no Visual Studio that can open it has the $($w.Label) extension ($cap) - those projects may not load" }
     }
     if ($Match -eq 'solution' -and $Info.Saved) {
-        $fit = @($pool | Where-Object { $_.Major -eq $Info.Saved })
+        $fit = @($pool.Where({ $_.Major -eq $Info.Saved }))
         if ($fit) {
             $pool = $fit
             $year = if ($script:VsYears.ContainsKey($Info.Saved)) { $script:VsYears[$Info.Saved] } else { $Info.Saved }
@@ -502,12 +537,21 @@ function Test-VsLinkDir {
     param([System.IO.DirectoryInfo]$Dir)
     (Get-Item -LiteralPath $Dir.FullName -Force -ErrorAction SilentlyContinue).LinkType -in 'Junction', 'SymbolicLink'
 }
+function Test-VsDriveRoot {
+    param([string]$Path)
+    $Path.TrimEnd('\', '/') -match '^[A-Za-z]:$'
+}
 function Find-VsFiles {
     # Breadth-first walk below Root, Depth folder levels deep, for files with one of the given
     # extensions. A folder that holds a match is not searched further down unless -All: the
     # solution at the top of a subtree is the one meant, the ones nested below it are its parts
-    # (backend\Backend.sln, not every backend\<service>\<service>.sln). Links are not followed.
+    # (backend\Backend.sln, not every backend\<service>\<service>.sln). Skipped: dot-folders, the
+    # skip list, hidden folders (Hidden only - Windows marks customised folders System or
+    # ReadOnly), the Windows and program folders at a drive root, and links.
     param([string]$Root, [string[]]$Extensions, [int]$Depth = 3, [switch]$All)
+    $atDriveRoot = Test-VsDriveRoot $Root
+    $hidden = [System.IO.FileAttributes]::Hidden
+    $reparse = [System.IO.FileAttributes]::ReparsePoint
     $queue = New-Object System.Collections.Generic.Queue[object]
     $queue.Enqueue(@($Root, 0))
     while ($queue.Count -gt 0) {
@@ -525,8 +569,12 @@ function Find-VsFiles {
         if (($hits -and -not $All) -or $level -ge $Depth) { continue }
         try {
             foreach ($d in $di.EnumerateDirectories()) {
-                if ($d.Name.StartsWith('.') -or $script:VsSkipDirs -contains $d.Name) { continue }
-                if (($d.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -and (Test-VsLinkDir $d)) { continue }
+                $name = $d.Name
+                if ($name.StartsWith('.') -or $script:VsSkipDirs -contains $name) { continue }
+                $attr = $d.Attributes
+                if ($attr -band $hidden) { continue }
+                if ($atDriveRoot -and $level -eq 0 -and $script:VsDriveRootSkipDirs -contains $name) { continue }
+                if (($attr -band $reparse) -and (Test-VsLinkDir $d)) { continue }
                 $queue.Enqueue(@($d.FullName, ($level + 1)))
             }
         }
@@ -587,11 +635,11 @@ function Get-VsFilterMatches {
     # Name and folder are matched as one string. Names that carry the filter literally lead, so
     # a loose subsequence hit cannot outrank the solution that actually reads that way.
     param([object[]]$Items, [string]$Filter)
-    $hits = @($Items | Where-Object { Test-VsFuzzyMatch "$($_.Name) $($_.Dir)" $Filter })
+    $hits = @(@($Items).Where({ Test-VsFuzzyMatch "$($_.Name) $($_.Dir)" $Filter }))
     $needle = $Filter.Replace(' ', '').ToLowerInvariant()
     if (-not $needle) { return $hits }
-    $direct = @($hits | Where-Object { $_.Name.ToLowerInvariant().Contains($needle) })
-    $loose = @($hits | Where-Object { -not $_.Name.ToLowerInvariant().Contains($needle) })
+    $direct = @($hits.Where({ $_.Name.ToLowerInvariant().Contains($needle) }))
+    $loose = @($hits.Where({ -not $_.Name.ToLowerInvariant().Contains($needle) }))
     $direct + $loose
 }
 
@@ -628,12 +676,14 @@ function Write-VsTable {
     param([object[]]$Rows, [string[]]$Columns, [string[]]$Clip = @())
     if (-not $Rows) { return }
     $w = @{}
-    foreach ($c in $Columns) {
-        $max = ($Rows | ForEach-Object { ([string]$_.$c).Length } | Measure-Object -Maximum).Maximum
-        $w[$c] = [Math]::Max([int]$max, $c.Length)
-    }
     $gap = 2
-    $over = ($Columns | ForEach-Object { $w[$_] } | Measure-Object -Sum).Sum + $gap * ($Columns.Count - 1) - (Get-VsConsoleWidth)
+    $over = $gap * ($Columns.Count - 1) - (Get-VsConsoleWidth)
+    foreach ($c in $Columns) {
+        $max = $c.Length
+        foreach ($r in $Rows) { $len = ([string]$r.$c).Length; if ($len -gt $max) { $max = $len } }
+        $w[$c] = $max
+        $over += $max
+    }
     foreach ($c in $Clip) {
         if ($over -le 0 -or -not $w.ContainsKey($c)) { continue }
         $take = [Math]::Max(0, [Math]::Min($over, $w[$c] - 10)); $w[$c] -= $take; $over -= $take
@@ -694,9 +744,13 @@ function Start-VsProcess {
     Start-Process @p
 }
 function Open-VsTarget {
+    # Solutions, projects and folders open in a Visual Studio of their own; a plain file goes to
+    # one that is already running (/Edit), the way double-clicking it would.
     param([object]$Info, [object]$Install, [switch]$Admin)
-    try { Start-VsProcess $Install.Path (ConvertTo-VsArgument $Info.Path) -Admin:$Admin }
-    catch { Write-Host "could not start $($Install.Path): $($_.Exception.Message)" -ForegroundColor Red; return }
+    $argument = ConvertTo-VsArgument $Info.Path
+    if ($Info.Kind -eq 'file') { $argument = "/Edit $argument" }
+    try { Start-VsProcess $Install.Path $argument -Admin:$Admin }
+    catch { Write-VsFail "could not start $($Install.Path): $($_.Exception.Message)" Red; return }
     $as = if ($Admin) { ' as administrator' } else { '' }
     Write-Host "opened $($Info.Name) in $($Install.Name)$as" -ForegroundColor Green
 }
@@ -754,12 +808,12 @@ function Open-VsOne {
     # One target: work out the install, ask unless told not to, open.
     param([object]$Info, [object[]]$Installs, [string]$Use, [string]$Match, [bool]$Ask, [switch]$Admin)
     $m = Select-VsInstall $Info $Installs $Use $Match
+    if (-not $m.Install) { Write-VsFail "warning: $($m.Warning)"; return }
     if ($m.Warning) { Write-Host "warning: $($m.Warning)" -ForegroundColor Yellow }
-    if (-not $m.Install) { return }
     $inst = $m.Install
     if ($Ask) {
         $inst = Confirm-VsOpen $Info $m $Installs
-        if (-not $inst) { Write-Host 'cancelled' -ForegroundColor DarkGray; return }
+        if (-not $inst) { Write-VsFail 'cancelled' DarkGray; return }
     }
     Open-VsTarget $Info $inst -Admin:$Admin
 }
@@ -889,12 +943,12 @@ function Select-VsSolution {
     $rows = @(ConvertTo-VsRows $Items $Installs $Use $Match)
     if (-not (Test-VsConsole)) {
         Write-VsTable $rows 'Name', 'VS', 'Dir' -Clip 'Dir', 'Name'
-        Write-Host 'several found - open one with: vs <name or path>' -ForegroundColor DarkGray
+        Write-VsFail 'several found - open one with: vs <name or path>' DarkGray
         return
     }
     # Last object only: a stray write inside the picker must not turn this into an array.
     $r = Show-VsPicker $rows @($Installs) $Filter | Select-Object -Last 1
-    if (-not $r) { Write-Host 'cancelled' -ForegroundColor DarkGray; return }
+    if (-not $r) { Write-VsFail 'cancelled' DarkGray; return }
     if ($r.Row.Match.Warning -and $r.Install -eq $r.Row.Install) { Write-Host "warning: $($r.Row.Match.Warning)" -ForegroundColor Yellow }
     Open-VsTarget (Get-VsTargetInfo $r.Row.Path) $r.Install -Admin:$Admin
 }
@@ -910,10 +964,10 @@ function Resolve-VsRoot {
     param([string]$Path)
     if (-not $Path) {
         $here = Get-VsHere
-        if (-not $here) { Write-Host "not a folder on disk: $(Get-Location) - cd somewhere first" -ForegroundColor Yellow }
+        if (-not $here) { Write-VsFail "not a folder on disk: $(Get-Location) - cd somewhere first" }
         return $here
     }
-    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { Write-Host "no such folder: $Path" -ForegroundColor Yellow; return $null }
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { Write-VsFail "no such folder: $Path"; return $null }
     (Get-Item -LiteralPath $Path -Force).FullName
 }
 function Invoke-VsOpen {
@@ -922,7 +976,7 @@ function Invoke-VsOpen {
     if (-not $Depth) { $Depth = [int]$cfg.depth }
     $ask = -not $Yes -and $cfg.confirm -ne 'off'
     $installs = @(Get-VsInstalls)
-    if (-not $installs) { Write-Host 'no Visual Studio found on this machine - installed since? vs scan looks again' -ForegroundColor Red; return }
+    if (-not $installs) { Write-VsFail 'no Visual Studio found on this machine - installed since? vs scan looks again' Red; return }
 
     # `vs .` is `code .`: this folder itself, in Open Folder mode.
     if ($Target -in '.', '.\', './') { $Folder = $true; $Target = '' }
@@ -934,7 +988,7 @@ function Invoke-VsOpen {
     if ($Target -and -not (Test-Path -LiteralPath $Target)) {
         # Something with a slash or a drive in it was meant as a path: say it is not there,
         # rather than look for a solution by that name.
-        if ($Target -match '[\\/:]') { Write-Host "no such file or folder: $Target" -ForegroundColor Yellow; return }
+        if ($Target -match '[\\/:]') { Write-VsFail "no such file or folder: $Target"; return }
         $filter = $Target; $Target = ''
     }
     $root = Resolve-VsRoot $Target
@@ -947,7 +1001,7 @@ function Invoke-VsOpen {
     if ($filter) {
         $hits = @(Get-VsFilterMatches $items $filter)
         if (-not $hits) {
-            Write-Host "no solution matching '$filter' below $root" -ForegroundColor Yellow
+            Write-VsFail "no solution matching '$filter' below $root"
             Write-Host '  vs list -All shows every solution vs can see here' -ForegroundColor DarkGray
             return
         }
@@ -961,7 +1015,7 @@ function Invoke-VsOpen {
         elseif ($hits.Count -eq 1) { $items = $hits }
     }
     if (-not $items) {
-        Write-Host "no solution or project file below $root (depth $Depth)" -ForegroundColor Yellow
+        Write-VsFail "no solution or project file below $root (depth $Depth)"
         Write-Host '  vs . opens the folder itself; -Depth <n> searches deeper' -ForegroundColor DarkGray
         return
     }
@@ -978,7 +1032,7 @@ function Show-VsSolutions {
     if (-not $root) { return }
     $installs = @(Get-VsInstalls)
     $found = Find-VsCandidates $root $Depth -All:$All
-    if (-not $found.Items) { Write-Host "no solution or project file below $root (depth $Depth)" -ForegroundColor Yellow; return }
+    if (-not $found.Items) { Write-VsFail "no solution or project file below $root (depth $Depth)"; return }
     if ($found.Source -eq 'above') { Write-Host "nothing below $root - found above it" -ForegroundColor DarkGray }
     elseif ($found.Source -eq 'projects') { Write-Host "no solution below $root - project files" -ForegroundColor DarkGray }
     $rows = @(ConvertTo-VsRows $found.Items $installs $Use $cfg.match)
@@ -989,7 +1043,7 @@ function Show-VsInstalls {
     if ($Refresh) { Write-Host 'looking for Visual Studio installs...' -ForegroundColor DarkGray }
     $list = @(Get-VsInstalls -Refresh:$Refresh)
     if (-not $list) {
-        Write-Host 'no Visual Studio found: not through vswhere, the registry or the default install folders' -ForegroundColor Yellow
+        Write-VsFail 'no Visual Studio found: not through vswhere, the registry or the default install folders'
         return
     }
     $default = Select-VsNewest $list
@@ -1013,9 +1067,16 @@ function Get-VsInstallMethod {
     $dir = $Root
     $item = Get-Item -LiteralPath $Root -Force -ErrorAction SilentlyContinue
     if ($item -and $item.LinkType -and $item.Target) { $dir = [string](@($item.Target)[0]) }
-    $r = [pscustomobject]@{ Method = 'manual'; Path = $dir; Clone = '' }
+    $r = [pscustomobject]@{ Method = 'manual'; Path = $dir; Clone = ''; Global = $false }
     $slash = $dir -replace '\\', '/'
-    if ($slash -match '/apps/psvscommand(/|$)') { $r.Method = 'scoop'; return $r }
+    if ($slash -match '/apps/psvscommand(/|$)') {
+        # `scoop install -g` lands in SCOOP_GLOBAL, by default ProgramData\scoop; updating that
+        # takes -g and an elevated shell.
+        $r.Method = 'scoop'
+        $globalDir = if ($env:SCOOP_GLOBAL) { $env:SCOOP_GLOBAL } else { Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'scoop' }
+        $r.Global = $dir.StartsWith($globalDir.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)
+        return $r
+    }
     $parent = Split-Path $dir -Parent
     if ($parent -and (Split-Path $parent -Leaf) -eq 'src') {
         $clone = Split-Path $parent -Parent
@@ -1026,7 +1087,7 @@ function Get-VsInstallMethod {
 function Get-VsUpdateCommand {
     param([object]$How)
     switch ($How.Method) {
-        'scoop' { 'scoop update psvscommand' }
+        'scoop' { if ($How.Global) { 'scoop update psvscommand --global (as administrator)' } else { 'scoop update psvscommand' } }
         'checkout' { "git -C '$($How.Clone)' pull" }
         default { 'vs update' }
     }
@@ -1065,20 +1126,24 @@ function Update-VsCommand {
     $state.lastCheck = Get-VsNow
     if ($latest) { $state.latest = $latest.ToString() }
     Write-VsJson 'state.json' $state
-    if (-not $latest) { Write-Host "could not reach GitHub, or there is no release yet - $script:ProjectUrl/releases" -ForegroundColor Yellow; return }
+    if (-not $latest) { Write-VsFail "could not reach GitHub, or there is no release yet - $script:ProjectUrl/releases"; return }
     $have = Get-VsVersion
     if ($latest -le $have) { Write-Host "vs $have is the latest release" -ForegroundColor Green; return }
     Write-Host "vs $latest is out (you have $have)" -ForegroundColor Cyan
     $how = Get-VsInstallMethod
     switch ($how.Method) {
         'scoop' {
+            if ($how.Global) {
+                Write-Host 'this is a global Scoop install - from an elevated shell: scoop update psvscommand --global' -ForegroundColor DarkGray
+                return
+            }
             if (-not $Yes -and (Read-Host 'run scoop update psvscommand now? [y/N]').Trim().ToLowerInvariant() -notin 'y', 'yes') {
                 Write-Host 'later: scoop update psvscommand' -ForegroundColor DarkGray
                 return
             }
             $code = Invoke-VsScoopUpdate
             if ($code -eq 0) { Write-Host 'updated - new shells have it; for this one: Import-Module PSVsCommand -Force' -ForegroundColor Green }
-            else { Write-Host "scoop update psvscommand failed (exit code $code)" -ForegroundColor Red }
+            else { Write-VsFail "scoop update psvscommand failed (exit code $code)" Red }
         }
         'checkout' {
             Write-Host "this copy is a git checkout - update it yourself: git -C '$($how.Clone)' pull" -ForegroundColor DarkGray
@@ -1097,11 +1162,39 @@ function Invoke-VsUpdate {
         if ($Value -eq 'on') { Write-Host 'vs now asks GitHub for a new release at most once a day, after a command' -ForegroundColor DarkGray }
         return
     }
-    Write-Host 'usage: vs update | vs update notify on|off' -ForegroundColor Yellow
+    Write-VsFail 'usage: vs update | vs update notify on|off'
+}
+function Save-VsLatestRelease {
+    # What the background check runs: ask GitHub, record the answer for the next command.
+    $latest = Get-VsLatestRelease -TimeoutMs 10000
+    if (-not $latest) { return }
+    $state = ConvertTo-VsHashtable (Read-VsJson 'state.json')
+    $state.latest = $latest.ToString()
+    Write-VsJson 'state.json' $state
+}
+function Get-VsUpdateCheckArguments {
+    # The command line of the background check: this module, imported by path, records the latest
+    # release. -EncodedCommand, so no path or quote in it needs escaping on the way through.
+    $psd1 = (Join-Path $PSScriptRoot 'PSVsCommand.psd1').Replace("'", "''")
+    $command = "Import-Module '$psd1'; & (Get-Module PSVsCommand) { Save-VsLatestRelease }"
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($command))
+    "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded"
+}
+function Start-VsUpdateCheck {
+    # The daily check runs in a windowless child process of the same PowerShell: the request -
+    # DNS included, which the timeout does not cover on 5.1 - never holds the prompt up, and it
+    # outlives the shim's process. Process.Start rather than Start-Process: ~170 ms cold
+    # instead of ~450.
+    $exe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    $psi = New-Object System.Diagnostics.ProcessStartInfo -ArgumentList $exe, (Get-VsUpdateCheckArguments)
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    [System.Diagnostics.Process]::Start($psi).Dispose()
 }
 function Invoke-VsUpdateNotice {
-    # After a command. Opted in: at most once a day, ask GitHub, and say so when a newer release
-    # is out. Unset: never online, but a tip at most once a week. Off: nothing at all.
+    # After a command. Opted in: at most once a day, start a check in the background, and say so
+    # when the last one found a newer release. Unset: never online, but a tip at most once a
+    # week. Off: nothing at all.
     if ($env:CI -or $env:PSVSCOMMAND_NO_UPDATE_CHECK) { return }
     if (-not (Test-VsConsole)) { return }
     $mode = (Get-VsConfig).updateCheck
@@ -1116,10 +1209,11 @@ function Invoke-VsUpdateNotice {
         return
     }
     if ($now - [long]$state.lastCheck -ge 86400) {
-        $latest = Get-VsLatestRelease
+        # Recorded before the child starts, so the next command does not start another.
         $state.lastCheck = $now
-        if ($latest) { $state.latest = $latest.ToString() }
         Write-VsJson 'state.json' $state
+        try { Start-VsUpdateCheck }
+        catch { $state.lastCheck = 0; Write-VsJson 'state.json' $state }   # no child: try again next time
     }
     $v = $null
     $have = Get-VsVersion
@@ -1189,7 +1283,7 @@ function Invoke-VsSetup {
     switch ("$Verb $What") {
         'install profile' { Install-VsProfile }
         'uninstall profile' { Uninstall-VsProfile }
-        default { Write-Host "usage: vs $Verb profile" -ForegroundColor Yellow }
+        default { Write-VsFail "usage: vs $Verb profile" }
     }
 }
 
@@ -1207,7 +1301,8 @@ USAGE:
   vs .                      open this folder itself in Visual Studio (Open Folder), the
                             way 'code .' does
   vs <dir>                  search <dir> instead
-  vs <file>                 open a .sln, .slnx, .slnf, project or any other file
+  vs <file>                 open a .sln, .slnx, .slnf or project in a Visual Studio of its
+                            own; any other file in one that is already running (/Edit)
   vs <name>                 the solutions below here whose name matches: an exact name or
                             a single match is opened, several get the picker, filtered
                             ('vs admin', 'vs bknd')
@@ -1246,21 +1341,30 @@ PICKER:
   Enter, Tab and Esc the same way.
 
 NOTES:
-  - which install: an SSRS (.rptproj) or SSIS (.dtproj) project goes to an install with
-    that extension; an .slnx needs 17.13 or newer, and a MinimumVisualStudioVersion above
-    10 is honoured; everything else goes to the newest stable install. 'vs list' shows
-    the choice and the reason for each solution.
+  - which install: an SSRS (.rptproj), SSIS (.dtproj) or SSAS (.smproj, .dwproj) project
+    goes to an install with that extension; an .slnx needs 17.13 or newer, and a
+    MinimumVisualStudioVersion above 10 is honoured; everything else goes to the newest
+    stable install. 'vs list' shows the choice and the reason for each solution.
   - installs come from vswhere (Visual Studio 2017 and newer), the registry (2015 and
     older) or, without vswhere, the default install folders; Team Explorer and installs
     an update left half done are left out. They are cached and scanned again when a
     cached devenv.exe is gone, when the Visual Studio Installer adds, updates or removes
     an instance, or on 'vs scan'.
-  - the search skips dot-folders (.git, .vs, .claude worktrees), bin, obj, node_modules,
-    packages and TestResults, and does not follow junctions or symlinks (OneDrive
-    folders are searched).
+  - the search skips dot-folders (.git, .vs, .claude worktrees), hidden folders
+    (AppData), bin, obj, node_modules, packages, artifacts, dist and TestResults - at a
+    drive root also Windows and the program folders - and does not follow junctions or
+    symlinks (OneDrive folders are searched).
   - a sub-command wins over a folder of the same name: 'vs .\list' searches .\list.
+  - 'install profile' writes `$PROFILE.CurrentUserAllHosts of the PowerShell running it:
+    run it once in each edition you use (pwsh, Windows PowerShell 5.1).
+  - through vs.ps1 - the Scoop shim in cmd, Git Bash or a script - vs exits with 1 when
+    nothing was found, opened or changed as asked, else 0.
+  - the picker and the confirm need a console: PowerShell or Git Bash in Windows Terminal
+    have one. Git Bash in its own window (mintty) hands vs pipes instead, so there it
+    prints the list - open one with 'vs <name>'.
   - nothing goes online unless you ask: 'vs update' checks once, 'vs update notify on'
-    daily. It is one HEAD request to GitHub's releases page; no telemetry.
+    daily, in the background - its answer shows after a later command. It is one HEAD
+    request to GitHub's releases page; no telemetry.
   - settings and caches: $(Get-VsHome)
   - module: $PSScriptRoot
   - project: $script:ProjectUrl
@@ -1269,7 +1373,10 @@ NOTES:
 function vs {
     param([Parameter(Position = 0)][string]$Command, [Parameter(Position = 1)][string]$Arg, [Parameter(Position = 2)][string]$Arg2,
         [string]$Use, [int]$Depth, [switch]$All, [switch]$Folder, [switch]$Yes, [switch]$Admin, [Alias('h')][switch]$Help)
-    if ($Help -or $Command -in '--help', 'help', '-h', '/?') { Show-VsHelp; return }
+    $script:VsExitCode = 0
+    # Git Bash hands '/?' over as a path: C:/Program Files/Git/?
+    if ($Help -or $Command -in '--help', 'help', '-h', '/?' -or $Command -match '^[A-Za-z]:/.*/\?$') { Show-VsHelp; return }
+    if ($PSBoundParameters.ContainsKey('Depth') -and $Depth -lt 1) { Write-VsFail "-Depth takes 1 or more (default $((Get-VsConfig).depth))"; return }
     switch ($Command) {
         { $_ -in 'list', 'ls' } { Show-VsSolutions $Arg -Use $Use -Depth $Depth -All:$All }
         'installs' { Show-VsInstalls }
@@ -1282,13 +1389,21 @@ function vs {
     }
     Invoke-VsUpdateNotice
 }
+$script:VsNameCache = $null
 function Get-VsCompletionNames {
-    # Solution names below the current folder, for `vs <name>` completion. Errors stay quiet:
-    # a completer that throws gives the user nothing at all.
+    # Solution names below the current folder, for `vs <name>` completion; kept 15 seconds per
+    # folder, so a burst of Tabs walks the tree once. Errors stay quiet: a completer that throws
+    # gives the user nothing at all.
     try {
         $here = Get-VsHere
         if (-not $here) { return }
-        Find-VsFiles $here $script:VsSolutionExtensions ([int](Get-VsConfig).depth) -All | ForEach-Object { $_.Name }
+        $depth = [int](Get-VsConfig).depth
+        $now = [DateTime]::UtcNow
+        $c = $script:VsNameCache
+        if ($c -and $c.Dir -eq $here -and $c.Depth -eq $depth -and ($now - $c.Time).TotalSeconds -lt 15) { return $c.Names }
+        $names = @(foreach ($f in Find-VsFiles $here $script:VsSolutionExtensions $depth -All) { $f.Name })
+        $script:VsNameCache = @{ Dir = $here; Depth = $depth; Time = $now; Names = $names }
+        $names
     }
     catch { return }
 }

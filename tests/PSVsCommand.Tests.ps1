@@ -83,6 +83,26 @@ Describe 'module surface' {
         Get-VsOutput { vs /? } | Should -Match 'USAGE:'
     }
 
+    It 'answers /? the way Git Bash hands it over (as a path)' {
+        Get-VsOutput { vs 'C:/Program Files/Git/?' } | Should -Match 'USAGE:'
+    }
+
+    It 'refuses -Depth below 1 instead of quietly using the default' {
+        $env:PSVSCOMMAND_HOME = New-TestDir
+        Get-VsOutput { vs list -Depth 0 } | Should -Match '-Depth takes 1 or more'
+        InModuleScope PSVsCommand { $script:VsExitCode } | Should -Be 1
+    }
+
+    It 'walks the tree once for a burst of Tab completions' {
+        Mock -ModuleName PSVsCommand Find-VsFiles { [pscustomobject]@{ Name = 'Cached.sln' } }
+        InModuleScope PSVsCommand {
+            $script:VsNameCache = $null
+            Get-VsCompletionNames | Should -Be 'Cached.sln'
+            Get-VsCompletionNames | Should -Be 'Cached.sln'
+        }
+        Should -Invoke -ModuleName PSVsCommand Find-VsFiles -Times 1 -Exactly
+    }
+
     It 'prints its version from the manifest' {
         $v = (Import-PowerShellDataFile $script:ModulePath).ModuleVersion
         Get-VsOutput { vs version } | Should -Match ([regex]::Escape("vs $v"))
@@ -92,6 +112,23 @@ Describe 'module surface' {
         $entry = Join-Path (Split-Path $script:ModulePath -Parent) 'vs.ps1'
         $entry | Should -Exist
         Get-Content $entry -Raw | Should -Match 'vs @args'
+    }
+}
+
+Describe 'vs.ps1 (the entry the Scoop shim runs)' {
+    It 'exits 1 when the command did not do as asked, 0 when it did' {
+        # A child process of the same edition, the way vs.cmd starts it. Settings go to a fresh
+        # PSVSCOMMAND_HOME, which the child inherits; nothing here needs Visual Studio.
+        $ErrorActionPreference = 'Continue'
+        $entry = Join-Path (Split-Path $script:ModulePath -Parent) 'vs.ps1'
+        $exe = (Get-Process -Id $PID).Path
+        $env:PSVSCOMMAND_HOME = New-TestDir
+        & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $entry config colour blue *> $null
+        $LASTEXITCODE | Should -Be 1
+        & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $entry config depth 4 *> $null
+        $LASTEXITCODE | Should -Be 0
+        & $exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $entry help *> $null
+        $LASTEXITCODE | Should -Be 0
     }
 }
 
@@ -206,6 +243,15 @@ Describe 'what a target asks for' {
         }
     }
 
+    It 'spots an SSAS project' {
+        $sm = New-TestFile (Join-Path $script:dir 'i\Cube.smproj')
+        InModuleScope PSVsCommand -Parameters @{ P = $sm } {
+            $i = Get-VsTargetInfo $P
+            $i.Kind | Should -Be 'project'
+            $i.Needs | Should -Be @('SSAS')
+        }
+    }
+
     It 'knows projects, other files and folders' {
         $rpt = New-TestFile (Join-Path $script:dir 'h\R.rptproj')
         $cs = New-TestFile (Join-Path $script:dir 'h\Program.cs')
@@ -267,6 +313,7 @@ Describe 'install scan' {
         $manifest = '<PackageManifest><Metadata><Identity Id="{0}" Version="1.0" /><DisplayName>{1}</DisplayName></Metadata></PackageManifest>'
         New-TestFile (Join-Path $appData 'Microsoft\VisualStudio\18.0_uuuu2026\Extensions\k3j2h1\extension.vsixmanifest') ($manifest -f 'f1a2b3c4-0000-4000-8000-000000000001', 'Microsoft Reporting Services Projects') | Out-Null
         New-TestFile (Join-Path $machine.installationPath 'Common7\IDE\Extensions\Microsoft\SSIS\1.0\extension.vsixmanifest') ($manifest -f 'f1a2b3c4-0000-4000-8000-000000000002', 'SQL Server Integration Services Projects 2022') | Out-Null
+        New-TestFile (Join-Path $machine.installationPath 'Common7\IDE\Extensions\Microsoft\SSAS\1.0\extension.vsixmanifest') ($manifest -f 'f1a2b3c4-0000-4000-8000-000000000003', 'Microsoft Analysis Services Projects 2022') | Out-Null
         $script:vswhereList = @($user, $machine)
         $saved = $env:LOCALAPPDATA
         $env:LOCALAPPDATA = $appData
@@ -274,7 +321,7 @@ Describe 'install scan' {
             InModuleScope PSVsCommand {
                 $list = @(Get-VsInstalls)
                 ($list | Where-Object Id -EQ 'uuuu2026').Capabilities | Should -Be @('SSRS')
-                ($list | Where-Object Id -EQ 'mmmm2022').Capabilities | Should -Be @('SSIS')
+                ($list | Where-Object Id -EQ 'mmmm2022').Capabilities | Should -Be @('SSIS', 'SSAS')
             }
         }
         finally { $env:LOCALAPPDATA = $saved }
@@ -285,6 +332,20 @@ Describe 'install scan' {
             $i = ConvertFrom-VsWhere ([pscustomobject]@{ instanceId = 'x'; displayName = 'Visual Studio Community'; installationVersion = '17.14.1.0'; productId = 'Microsoft.VisualStudio.Product.Community'; productPath = 'C:\x\devenv.exe'; installationPath = 'C:\x'; isPrerelease = $false; catalog = $null })
             $i.Year | Should -Be '2022'
             $i.Label | Should -Be '2022 Community'
+        }
+    }
+
+    It 'takes nothing but a devenv.exe from the cache' {
+        InModuleScope PSVsCommand { Get-VsInstalls | Out-Null }
+        $file = Join-Path $env:PSVSCOMMAND_HOME 'installs.json'
+        $j = Get-Content $file -Raw | ConvertFrom-Json
+        $other = New-TestFile (Join-Path (New-TestDir) 'calc.exe')
+        $j.installs[0].Path = $other
+        [IO.File]::WriteAllText($file, ($j | ConvertTo-Json -Depth 6))
+        InModuleScope PSVsCommand -Parameters @{ Other = $other } {
+            $paths = @(Read-VsInstallCache).Path
+            $paths.Count | Should -Be 1
+            $paths | Should -Not -Contain $Other
         }
     }
 
@@ -456,6 +517,32 @@ Describe 'finding solutions' {
         New-Item -ItemType Junction -Path (Join-Path $script:repo 'linked') -Target $script:elsewhere | Out-Null
     }
 
+    It 'skips hidden folders, and the Windows and program folders only at a drive root' {
+        $root = New-TestDir
+        New-Sln (Join-Path $root 'AppData\Local\Hidden.sln') | Out-Null
+        $appData = Get-Item (Join-Path $root 'AppData') -Force
+        $appData.Attributes = $appData.Attributes -bor [System.IO.FileAttributes]::Hidden
+        New-Sln (Join-Path $root 'Windows\Win.sln') | Out-Null
+        New-Sln (Join-Path $root 'Program Files\Tool\Tool.sln') | Out-Null
+        New-Sln (Join-Path $root 'src\Windows\Desk.sln') | Out-Null
+        New-Sln (Join-Path $root 'web\dist\Built.sln') | Out-Null
+        InModuleScope PSVsCommand -Parameters @{ R = $root } {
+            $names = @(Find-VsFiles $R @('.sln') 3 -All).Name
+            $names | Should -Not -Contain 'Hidden.sln'
+            $names | Should -Not -Contain 'Built.sln'
+            # Not a drive root: a folder called Windows is just a folder.
+            $names | Should -Contain 'Win.sln'
+            $names | Should -Contain 'Tool.sln'
+        }
+        Mock -ModuleName PSVsCommand Test-VsDriveRoot { $true }
+        InModuleScope PSVsCommand -Parameters @{ R = $root } {
+            $names = @(Find-VsFiles $R @('.sln') 3 -All).Name
+            $names | Should -Not -Contain 'Win.sln'
+            $names | Should -Not -Contain 'Tool.sln'
+            $names | Should -Contain 'Desk.sln'
+        }
+    }
+
     It 'does not follow junctions' {
         InModuleScope PSVsCommand -Parameters @{ R = $script:repo } {
             (Find-VsCandidates $R 3 -All).Items.Name | Should -Not -Contain 'Linked.sln'
@@ -583,6 +670,26 @@ Describe 'vs (opening)' {
         Should -Invoke -ModuleName PSVsCommand Start-VsProcess -Times 2 -Exactly
     }
 
+    It 'opens a plain file in a running Visual Studio (/Edit)' {
+        $cs = New-TestFile (Join-Path $script:work 'files\Program.cs') 'class P {}'
+        Get-VsOutput { vs $cs -Yes } | Should -Match 'opened Program.cs'
+        $want = '/Edit "' + $cs + '"'
+        Should -Invoke -ModuleName PSVsCommand Start-VsProcess -Times 1 -Exactly -ParameterFilter { $Argument -eq $want }
+    }
+
+    It 'sets the exit code: 1 when nothing was opened, 0 when it was' {
+        Push-Location $script:work
+        try {
+            Get-VsOutput { vs nosuchthing -Yes } | Out-Null
+            InModuleScope PSVsCommand { $script:VsExitCode } | Should -Be 1
+            Get-VsOutput { vs admin -Yes } | Out-Null
+            InModuleScope PSVsCommand { $script:VsExitCode } | Should -Be 0
+            Get-VsOutput { vs -Yes } | Should -Match 'several found'
+            InModuleScope PSVsCommand { $script:VsExitCode } | Should -Be 1
+        }
+        finally { Pop-Location }
+    }
+
     It 'says a path is not there instead of searching for it as a name' {
         $missing = Join-Path $script:work 'nope\Missing.sln'
         Get-VsOutput { vs $missing -Yes } | Should -Match 'no such file or folder'
@@ -687,6 +794,27 @@ Describe 'updates' {
         }
     }
 
+    It 'tells a global Scoop install apart, and leaves its update to an elevated shell' {
+        $base = New-TestDir
+        $g = Join-Path $base 'gscoop\apps\psvscommand\current'
+        New-Item -ItemType Directory -Force -Path $g | Out-Null
+        $saved = $env:SCOOP_GLOBAL
+        $env:SCOOP_GLOBAL = Join-Path $base 'gscoop'
+        try {
+            InModuleScope PSVsCommand -Parameters @{ G = $g } {
+                $m = Get-VsInstallMethod $G
+                $m.Method | Should -Be 'scoop'
+                $m.Global | Should -BeTrue
+                Get-VsUpdateCommand $m | Should -Match 'scoop update psvscommand --global'
+            }
+        }
+        finally { $env:SCOOP_GLOBAL = $saved }
+        Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\ProgramData\scoop\apps\psvscommand\current'; Clone = ''; Global = $true } }
+        Mock -ModuleName PSVsCommand Invoke-VsScoopUpdate { 0 }
+        Get-VsOutput { vs update -Yes } | Should -Match 'elevated shell: scoop update psvscommand --global'
+        Should -Invoke -ModuleName PSVsCommand Invoke-VsScoopUpdate -Times 0 -Exactly
+    }
+
     It 'vs update on a checkout says to pull, and runs nothing' {
         Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'checkout'; Path = 'C:\c\src\PSVsCommand'; Clone = 'C:\c' } }
         Mock -ModuleName PSVsCommand Invoke-VsScoopUpdate { 0 }
@@ -697,7 +825,7 @@ Describe 'updates' {
     }
 
     It 'vs update with Scoop asks, then runs scoop update in a child process' {
-        Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\s'; Clone = '' } }
+        Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\s'; Clone = ''; Global = $false } }
         Mock -ModuleName PSVsCommand Invoke-VsScoopUpdate { 0 }
         Mock -ModuleName PSVsCommand Read-Host { 'n' }
         Get-VsOutput { vs update } | Should -Match 'later: scoop update psvscommand'
@@ -711,6 +839,24 @@ Describe 'updates' {
         Get-VsOutput { vs update } | Should -Match 'is the latest release'
         Mock -ModuleName PSVsCommand Get-VsLatestRelease { $null }
         Get-VsOutput { vs update } | Should -Match 'could not reach GitHub'
+    }
+
+    It 'gives the background check a command line that imports this module and records the latest release' {
+        InModuleScope PSVsCommand -Parameters @{ Psd1 = (Resolve-Path $script:ModulePath).Path } {
+            $a = Get-VsUpdateCheckArguments
+            $a | Should -Match '-NoProfile'
+            $command = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($a -replace '^.*-EncodedCommand\s+', '')))
+            $command | Should -Match ([regex]::Escape("Import-Module '$Psd1'"))
+            $command | Should -Match 'Save-VsLatestRelease'
+        }
+    }
+
+    It 'Save-VsLatestRelease records what GitHub said, and nothing when it said nothing' {
+        InModuleScope PSVsCommand { Save-VsLatestRelease }
+        (Get-Content (Join-Path $env:PSVSCOMMAND_HOME 'state.json') -Raw | ConvertFrom-Json).latest | Should -Be '99.0.0'
+        Mock -ModuleName PSVsCommand Get-VsLatestRelease { $null }
+        InModuleScope PSVsCommand { Save-VsLatestRelease }
+        (Get-Content (Join-Path $env:PSVSCOMMAND_HOME 'state.json') -Raw | ConvertFrom-Json).latest | Should -Be '99.0.0'
     }
 
     It 'vs update notify on|off sets the opt-in' {
@@ -729,7 +875,9 @@ Describe 'updates' {
             $script:now = [long]1800000000
             Mock -ModuleName PSVsCommand Test-VsConsole { $true }
             Mock -ModuleName PSVsCommand Get-VsNow { $script:now }
-            Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\s'; Clone = '' } }
+            Mock -ModuleName PSVsCommand Get-VsInstallMethod { [pscustomobject]@{ Method = 'scoop'; Path = 'C:\s'; Clone = ''; Global = $false } }
+            # Never a real child process from the suite.
+            Mock -ModuleName PSVsCommand Start-VsUpdateCheck { }
         }
         AfterEach {
             $env:PSVSCOMMAND_NO_UPDATE_CHECK = '1'
@@ -742,18 +890,32 @@ Describe 'updates' {
             $script:now += 8 * 86400
             InModuleScope PSVsCommand { (Invoke-VsUpdateNotice 6>&1 | Out-String) | Should -Match 'tip:' }
             Should -Invoke -ModuleName PSVsCommand Get-VsLatestRelease -Times 0 -Exactly
+            Should -Invoke -ModuleName PSVsCommand Start-VsUpdateCheck -Times 0 -Exactly
         }
 
-        It 'on: asks GitHub at most once a day and names the update command' {
+        It 'on: starts a background check at most once a day, and names the update command once it found one' {
+            Mock -ModuleName PSVsCommand Start-VsUpdateCheck { }
             # Not `vs config updateCheck on`: that command runs the notice itself on the way out.
             Get-VsOutput { vs update notify on } | Out-Null
-            InModuleScope PSVsCommand { (Invoke-VsUpdateNotice 6>&1 | Out-String) | Should -Match 'vs 99\.0\.0 is out .* scoop update psvscommand' }
-            $script:now += 3600
             InModuleScope PSVsCommand { (Invoke-VsUpdateNotice 6>&1 | Out-String) | Should -BeNullOrEmpty }
-            Should -Invoke -ModuleName PSVsCommand Get-VsLatestRelease -Times 1 -Exactly
+            Should -Invoke -ModuleName PSVsCommand Start-VsUpdateCheck -Times 1 -Exactly
+            # What the child does, done here: record the latest release.
+            InModuleScope PSVsCommand { Save-VsLatestRelease }
+            $script:now += 3600
+            InModuleScope PSVsCommand { (Invoke-VsUpdateNotice 6>&1 | Out-String) | Should -Match 'vs 99\.0\.0 is out .* scoop update psvscommand' }
+            InModuleScope PSVsCommand { (Invoke-VsUpdateNotice 6>&1 | Out-String) | Should -BeNullOrEmpty }
+            Should -Invoke -ModuleName PSVsCommand Start-VsUpdateCheck -Times 1 -Exactly
             $script:now += 86400
             InModuleScope PSVsCommand { (Invoke-VsUpdateNotice 6>&1 | Out-String) | Should -Match 'is out' }
-            Should -Invoke -ModuleName PSVsCommand Get-VsLatestRelease -Times 2 -Exactly
+            Should -Invoke -ModuleName PSVsCommand Start-VsUpdateCheck -Times 2 -Exactly
+        }
+
+
+        It 'a failed start of the check is tried again on the next command' {
+            Mock -ModuleName PSVsCommand Start-VsUpdateCheck { throw 'no pwsh' }
+            Get-VsOutput { vs update notify on } | Out-Null
+            InModuleScope PSVsCommand { Invoke-VsUpdateNotice 6>&1 | Out-Null; Invoke-VsUpdateNotice 6>&1 | Out-Null }
+            Should -Invoke -ModuleName PSVsCommand Start-VsUpdateCheck -Times 2 -Exactly
         }
 
         It 'off: silent and offline' {
