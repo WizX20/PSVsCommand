@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSVsCommand.psm1'
-    ModuleVersion     = '1.0.1'
+    ModuleVersion     = '1.0.2'
     GUID              = 'a6c73fc2-36e2-49bb-86ad-6f863cea5fc9'
     Author            = 'WizX20'
     CompanyName       = 'WizX20'

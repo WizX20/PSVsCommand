@@ -6,6 +6,8 @@ Write new entries under **Unreleased** — the Release workflow stamps the versi
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-10-06
+
 ### Fixed
 
 - `vs update` no longer says "updated" while Scoop kept the old version: it refreshes the bucket first

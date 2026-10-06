@@ -1,10 +1,10 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "vs - open the right solution in the right Visual Studio: finds every .sln/.slnx below the current folder, picks among several, and matches each to an installed Visual Studio.",
   "homepage": "https://github.com/WizX20/PSVsCommand",
   "license": "BUSL-1.1",
-  "url": "https://github.com/WizX20/PSVsCommand/releases/download/v1.0.1/PSVsCommand-1.0.1.zip",
-  "hash": "CB2F1D6BB18C60664C33A13131C29810E4D617E1B0499F40AD88C3F8426DD65C",
+  "url": "https://github.com/WizX20/PSVsCommand/releases/download/v1.0.2/PSVsCommand-1.0.2.zip",
+  "hash": "93A4C9553EB839F4CC9ADB6061E6ECB70F659E247FFBD6116E619520E57E7480",
   "extract_dir": "PSVsCommand",
   "psmodule": {
     "name": "PSVsCommand"
