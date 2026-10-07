@@ -65,8 +65,17 @@ Coming later. Until then use Scoop or the manual install.
 ### Manual
 
 1. Download `PSVsCommand-<version>.zip` from [GitHub Releases](https://github.com/WizX20/PSVsCommand/releases/latest).
-2. Extract the `PSVsCommand` folder into a directory on your `PSModulePath` — for PowerShell 7 that is `$HOME\Documents\PowerShell\Modules\`, for Windows PowerShell 5.1 `$HOME\Documents\WindowsPowerShell\Modules\`.
+2. Unblock the zip and extract it into your module folder — it holds a `PSVsCommand` folder. Run this in the PowerShell you use `vs` from: it picks that edition's folder (`Documents\PowerShell\Modules` for PowerShell 7, `Documents\WindowsPowerShell\Modules` for Windows PowerShell 5.1):
+
+   ```powershell
+   Unblock-File .\PSVsCommand-<version>.zip
+   Expand-Archive .\PSVsCommand-<version>.zip -DestinationPath (Join-Path (Split-Path $PROFILE.CurrentUserAllHosts) 'Modules')
+   ```
+
+   A downloaded file carries a "came from the internet" mark; without `Unblock-File`, the default `RemoteSigned` execution policy of Windows PowerShell can refuse to load the module's unsigned scripts.
 3. Run `Import-Module PSVsCommand; vs install profile`, or add `Import-Module PSVsCommand` to your profile yourself (`notepad $PROFILE`).
+
+To update, delete that `PSVsCommand` folder and extract the new zip the same way.
 
 ### From a checkout
 

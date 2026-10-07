@@ -83,6 +83,22 @@ Describe 'module surface' {
         Get-VsOutput { vs /? } | Should -Match 'USAGE:'
     }
 
+    It 'help is quoted word for word in the README' {
+        # The README quotes `vs --help` (task help). Two lines differ per machine and are
+        # placeholders there: the settings folder and the module folder. ReadAllText reads UTF-8
+        # on both editions; Get-Content on 5.1 would read the README's em-dashes as ANSI.
+        $readme = [IO.File]::ReadAllText((Join-Path (Split-Path $PSScriptRoot -Parent) 'README.md'))
+        $quoted = [regex]::Match($readme, '(?s)## `vs --help`\s*```text\r?\n(.*?)\r?\n```').Groups[1].Value
+        $quoted | Should -Not -BeNullOrEmpty
+        $normalise = {
+            param([string]$Text)
+            @($Text.TrimEnd() -split '\r?\n' | ForEach-Object {
+                    $_.TrimEnd() -replace '^(  - settings and caches: ).*', '$1<home>' -replace '^(  - module: ).*', '$1<module>'
+                }) -join "`n"
+        }
+        (& $normalise (Get-VsOutput { vs --help })) | Should -Be (& $normalise $quoted)
+    }
+
     It 'answers /? the way Git Bash hands it over (as a path)' {
         Get-VsOutput { vs 'C:/Program Files/Git/?' } | Should -Match 'USAGE:'
     }

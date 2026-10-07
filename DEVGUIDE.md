@@ -27,7 +27,7 @@ Import-Module PSVsCommand -Force # after every edit
 task unlink                     # remove the junction
 ```
 
-Or skip the junction and load by path: `Import-Module ./src/PSVsCommand -Force`. To try the shim path, run the entry script the way Scoop's `vs.cmd` does: `pwsh -NoProfile -File src/PSVsCommand/vs.ps1 list -All`.
+`task link` in another checkout or worktree points the junction there (it says `re-pointing`); one left pointing at a deleted worktree is fixed the same way. Or skip the junction and load by path: `Import-Module ./src/PSVsCommand -Force`. To try the shim path, run the entry script the way Scoop's `vs.cmd` does: `pwsh -NoProfile -File src/PSVsCommand/vs.ps1 list -All`.
 
 Set `PSVSCOMMAND_HOME` to a scratch folder to keep your experiments away from your real settings and install cache (`%LOCALAPPDATA%\PSVsCommand`).
 
@@ -48,6 +48,7 @@ task help                   # print `vs --help` (the README quotes it verbatim)
 - Exit codes: failures go through `Write-VsFail`, which sets `$script:VsExitCode`; `vs.ps1` exits with it. The `vs.ps1` tests start the entry script as a child process of the same edition, the way Scoop's `vs.cmd` does.
 - `vs` prints through `Write-Host`; tests capture it with `6>&1` (the `Get-VsOutput { vs ... }` helper). Call `vs` with real switches inside the block — splatting `'-Yes'` as a string would bind it positionally.
 - The picker and the confirm prompt read the console directly and are not under test (`Test-VsConsole` is mocked to `$false`, which takes the plain-text paths); try them by hand in a folder with a few solutions.
+- When `task help` changes, paste it into the README's `vs --help` block. Two lines differ per machine — keep `settings and caches: C:\Users\you\AppData\Local\PSVsCommand` and `module: C:\Users\you\scoop\apps\psvscommand\current` there. A test compares the two with those lines normalised, so a help change without the README fails `task test`.
 
 ## GitHub account: everything as WizX20
 
@@ -95,9 +96,14 @@ Then the `release` job, on the commit step 5 verified — not whatever `main` is
 
 If step 13 fails after step 12 pushed, `main`'s manifest points at a zip nobody can download yet. Publish the draft by hand: `git gh release edit vx.y.z --draft=false --latest`. Do **not** re-pack and upload a zip from the tag: a rebuilt zip has another SHA256 than the hash the pushed manifest carries, and every `scoop install` would fail on it. As long as `main` is still at that tag, every later run — weekly or dispatched — stops in step 1 with that same command, instead of reporting "nothing to release". If the draft is gone, its zip went with it: merge anything to `main` and release again; the next version carries a fresh zip and hash.
 
-### First release
+### Repository setup
 
-`bucket/psvscommand.json` ships with a placeholder hash (all zeros) until the first release has run; `scoop install psvscommand` fails with a hash mismatch before that. Run `task release` once the repo is on GitHub, the release token is set and CI is green — it ships the manifest's `1.0.0`.
+Done once, before `1.0.0` (2026-10-01); kept as the checklist for a repository like this one:
+
+1. `WizX20/PSVsCommand` is **public**: Scoop downloads release assets anonymously, and `vs update` reads the `releases/latest` redirect the same way (see [Repo visibility](#repo-visibility)).
+2. The `PSVSCOMMAND_RELEASE_TOKEN` secret (below), with a dated `maintenance` issue to rotate it ([#1](https://github.com/WizX20/PSVsCommand/issues/1)).
+3. The ruleset `main` (below): pull requests only, squash merges only, the four required checks. Labels as in [CONTRIBUTING.md → Issue labels](CONTRIBUTING.md#issue-labels).
+4. `task release` shipped the manifest's version; until then `bucket/psvscommand.json` carried a placeholder hash (all zeros) and `scoop install psvscommand` failed with a hash mismatch. From then on the release workflow keeps the manifest in step.
 
 ### Required secret: `PSVSCOMMAND_RELEASE_TOKEN`
 
