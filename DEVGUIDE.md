@@ -11,7 +11,7 @@ src/PSVsCommand/vs.ps1             entry script for shells without the module (t
 tests/PSVsCommand.Tests.ps1        Pester 5+ suite; fake Visual Studio installs under $TestDrive
 scripts/                           lint / test / pack / set-version / cut-changelog / dev-link
 bucket/psvscommand.json            Scoop manifest; this repo doubles as the Scoop bucket
-.github/workflows/ci.yml           lint + test on pwsh and Windows PowerShell 5.1, pack, release-token expiry
+.github/workflows/ci.yml           lint + test on pwsh and Windows PowerShell 5.1, pack, release-token expiry; also weekly
 .github/workflows/release.yml      weekly/manual release: stamp, test, pack, bump bucket, tag, GitHub Release
 .gitconfig                         maintainer-only: makes this clone talk to GitHub as WizX20
 Taskfile.yml                       `task --list`
@@ -110,7 +110,7 @@ If step 13 fails after step 12 pushed, `main`'s manifest points at a zip nobody 
 
 3. Re-run the **release token expiry** job (or push anything): its log and run summary show the expiry GitHub reports. Put that date, and a rotate-by date two weeks before it, in the title of the rotation issue ([#1](https://github.com/WizX20/PSVsCommand/issues/1)).
 
-The `check` job fails early with a clear message when the secret is missing. CI's required **release token expiry** job reads the token's real expiry from the API (`GitHub-Authentication-Token-Expiration` header) on every PR and push: a warning 30 days out, a failure 14 days out — so an expiring token blocks merges until it is rotated, and no date has to be maintained by hand. Rotating is the same three steps as above; the issue keeps the checklist. A push with this token also triggers CI on `main` for the release commit — expected, one extra run per release. Without expiry the same can be done with a GitHub App added to the ruleset's bypass list; not worth it for one maintainer.
+The `check` job fails early with a clear message when the secret is missing. CI's required **release token expiry** job reads the token's real expiry from the API (`GitHub-Authentication-Token-Expiration` header) on every PR and push, and in a weekly scheduled CI run on Mondays 05:00 UTC: a warning 30 days out, a failure 14 days out, and a failure when the secret is missing — so an expiring token blocks merges until it is rotated, and no date has to be maintained by hand. A failed scheduled run emails the maintainer, so a quiet week no longer hides a token that lapses before Tuesday's release. GitHub disables scheduled workflows after 60 days without repository activity; in a stretch that quiet, the dated rotation issue and GitHub's own expiry mail are the reminders left. Rotating is the same three steps as above; the issue keeps the checklist. A push with this token also triggers CI on `main` for the release commit — expected, one extra run per release. Without expiry the same can be done with a GitHub App added to the ruleset's bypass list; not worth it for one maintainer.
 
 ### Branch rules (ruleset `main`)
 
