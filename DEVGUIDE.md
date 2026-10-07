@@ -74,7 +74,7 @@ task release VERSION=1.1.0      # release now with an explicit version
 
 The `check` job decides first, on `main`:
 
-1. **Anything to release?** If `main` is exactly the commit of the latest `v*` tag, stop quietly (the weekly run is a no-op on a quiet week).
+1. **Anything to release?** If `main` is exactly the commit of the latest `v*` tag, stop quietly (the weekly run is a no-op on a quiet week) — unless that tag has no published GitHub Release: then fail with the command that publishes its draft (see below).
 2. **Which version?** The dispatch input if given; else the manifest's `ModuleVersion` when no tag for it exists yet (first release, or a bump made in a PR); else the next patch of it. For a **minor/major** bump, raise `ModuleVersion` in `src/PSVsCommand/PSVsCommand.psd1` in your PR — the next release ships exactly that.
 3. **Validate** — plain `x.y.z`, no such tag yet, not below the manifest version.
 4. **Release token** — the `PSVSCOMMAND_RELEASE_TOKEN` secret must exist.
@@ -86,10 +86,12 @@ Then the `release` job, on the commit step 5 verified — not whatever `main` is
 7. **Lint + test** the stamped module.
 8. **Pack** — `scripts/pack.ps1` builds `dist/PSVsCommand-x.y.z.zip` (top-level `PSVsCommand/` folder with `PSVsCommand.psd1`, `PSVsCommand.psm1`, `vs.ps1`, `LICENSE`, `NOTICE`) and prints its SHA256.
 9. **Bump the bucket** — `bucket/psvscommand.json` gets the new `version`, `url` and `hash`, edited in place.
-10. **Commit + tag** `chore: release vx.y.z` (as `github-actions[bot]`) with the `vx.y.z` tag, pushed to `main` with the release token — atomically: branch and tag land together or not at all. When `main` moved meanwhile the push is refused and nothing is published; run the release again.
-11. **GitHub Release** `vx.y.z` with the zip attached and the changelog section as body.
+10. **Commit** `chore: release vx.y.z` (as `github-actions[bot]`).
+11. **Draft the GitHub Release** `vx.y.z` with the zip attached and the changelog section as body — before anything reaches `main`.
+12. **Tag + push** — the commit and the `vx.y.z` tag go to `main` with the release token, atomically: branch and tag land together or not at all. When `main` moved meanwhile the push is refused, the draft is deleted and nothing is published; run the release again.
+13. **Publish** the draft, as the latest release (Scoop's `checkver` and `vs update` follow `releases/latest`).
 
-If step 11 fails after step 10 pushed, create the release by hand with `git gh release create vx.y.z dist/PSVsCommand-x.y.z.zip` from a fresh checkout of the tag — the tag check in step 3 refuses a re-run.
+If step 13 fails after step 12 pushed, `main`'s manifest points at a zip nobody can download yet. Publish the draft by hand: `git gh release edit vx.y.z --draft=false --latest`. Do **not** re-pack and upload a zip from the tag: a rebuilt zip has another SHA256 than the hash the pushed manifest carries, and every `scoop install` would fail on it. As long as `main` is still at that tag, every later run — weekly or dispatched — stops in step 1 with that same command, instead of reporting "nothing to release". If the draft is gone, its zip went with it: merge anything to `main` and release again; the next version carries a fresh zip and hash.
 
 ### First release
 
