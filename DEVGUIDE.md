@@ -11,7 +11,7 @@ src/PSVsCommand/vs.ps1             entry script for shells without the module (t
 tests/PSVsCommand.Tests.ps1        Pester 5+ suite; fake Visual Studio installs under $TestDrive
 scripts/                           lint / test / pack / set-version / cut-changelog / dev-link
 bucket/psvscommand.json            Scoop manifest; this repo doubles as the Scoop bucket
-.github/workflows/ci.yml           lint + test on pwsh and Windows PowerShell 5.1, pack, release-token expiry
+.github/workflows/ci.yml           lint + test on pwsh and Windows PowerShell 5.1, pack, release-token expiry; also weekly
 .github/workflows/release.yml      weekly/manual release: stamp, test, pack, bump bucket, tag, GitHub Release
 .gitconfig                         maintainer-only: makes this clone talk to GitHub as WizX20
 Taskfile.yml                       `task --list`
@@ -74,22 +74,24 @@ task release VERSION=1.1.0      # release now with an explicit version
 
 The `check` job decides first, on `main`:
 
-1. **Anything to release?** If `main` is exactly the commit of the latest `v*` tag, stop quietly (the weekly run is a no-op on a quiet week).
+1. **Anything to release?** If `main` is exactly the commit of the latest `v*` tag, stop quietly (the weekly run is a no-op on a quiet week) — unless that tag has no published GitHub Release: then fail with the command that publishes its draft (see below).
 2. **Which version?** The dispatch input if given; else the manifest's `ModuleVersion` when no tag for it exists yet (first release, or a bump made in a PR); else the next patch of it. For a **minor/major** bump, raise `ModuleVersion` in `src/PSVsCommand/PSVsCommand.psd1` in your PR — the next release ships exactly that.
 3. **Validate** — plain `x.y.z`, no such tag yet, not below the manifest version.
 4. **Release token** — the `PSVSCOMMAND_RELEASE_TOKEN` secret must exist.
-5. **Gate on CI** — the CI run of the exact commit being released must be `success` (it waits up to 20 minutes for a run still going).
+5. **Gate on CI** — the CI run of the exact commit being released must be `success` (it waits up to 20 minutes for a run still going). An API error, or no CI run after five minutes, refuses the release rather than letting it through: the release job only tests on PowerShell 7, so without CI a Windows PowerShell 5.1 regression could ship.
 
-Then the `release` job:
+Then the `release` job, on the commit step 5 verified — not whatever `main` is by then (a merge during the CI wait would otherwise ship untested, or stamp the next patch over a minor bump that just landed):
 
 6. **Stamp** — `scripts/set-version.ps1` writes `ModuleVersion`; `scripts/cut-changelog.ps1 -FallbackFromGit` turns `## [Unreleased]` into `## [x.y.z] - <date>` and extracts that section as the release notes. An empty section is filled from the commit subjects since the last tag, so write readable subjects even when you skip the changelog.
 7. **Lint + test** the stamped module.
 8. **Pack** — `scripts/pack.ps1` builds `dist/PSVsCommand-x.y.z.zip` (top-level `PSVsCommand/` folder with `PSVsCommand.psd1`, `PSVsCommand.psm1`, `vs.ps1`, `LICENSE`, `NOTICE`) and prints its SHA256.
 9. **Bump the bucket** — `bucket/psvscommand.json` gets the new `version`, `url` and `hash`, edited in place.
-10. **Commit + tag** `chore: release vx.y.z` on `main` (as `github-actions[bot]`, pushed with the release token), with the `vx.y.z` tag.
-11. **GitHub Release** `vx.y.z` with the zip attached and the changelog section as body.
+10. **Commit** `chore: release vx.y.z` (as `github-actions[bot]`).
+11. **Draft the GitHub Release** `vx.y.z` with the zip attached and the changelog section as body — before anything reaches `main`.
+12. **Tag + push** — the commit and the `vx.y.z` tag go to `main` with the release token, atomically: branch and tag land together or not at all. When `main` moved meanwhile the push is refused, the draft is deleted and nothing is published; run the release again.
+13. **Publish** the draft, as the latest release (Scoop's `checkver` and `vs update` follow `releases/latest`).
 
-If step 11 fails after step 10 pushed, create the release by hand with `git gh release create vx.y.z dist/PSVsCommand-x.y.z.zip` from a fresh checkout of the tag — the tag check in step 3 refuses a re-run.
+If step 13 fails after step 12 pushed, `main`'s manifest points at a zip nobody can download yet. Publish the draft by hand: `git gh release edit vx.y.z --draft=false --latest`. Do **not** re-pack and upload a zip from the tag: a rebuilt zip has another SHA256 than the hash the pushed manifest carries, and every `scoop install` would fail on it. As long as `main` is still at that tag, every later run — weekly or dispatched — stops in step 1 with that same command, instead of reporting "nothing to release". If the draft is gone, its zip went with it: merge anything to `main` and release again; the next version carries a fresh zip and hash.
 
 ### First release
 
@@ -97,7 +99,7 @@ If step 11 fails after step 10 pushed, create the release by hand with `git gh r
 
 ### Required secret: `PSVSCOMMAND_RELEASE_TOKEN`
 
-`main` is protected by a ruleset (pull requests only, squash merges only, CI checks required, no force-push; only the repository admin may bypass). `GITHUB_TOKEN` cannot bypass rulesets on a user-owned repository, so the release commit is pushed with a maintainer token:
+`main` is protected by a ruleset (pull requests only, squash merges only, CI checks required, no force-push; only the repository admin may bypass). `GITHUB_TOKEN` cannot bypass rulesets on a user-owned repository, so the release commit is pushed with a maintainer token. Only the push step sees it: both checkouts persist no credentials, so lint, the tests and the modules they install never run next to a token that may bypass the ruleset. `GITHUB_TOKEN` gets per-job permissions only — `check` reads contents and actions (the CI runs), `release` writes contents (the GitHub Release). To create the token:
 
 1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate. Resource owner `WizX20`, repository access: only `PSVsCommand` (PSWorktree has its own token, `PSWORKTREE_RELEASE_TOKEN`), permissions: **Contents: Read and write** (Metadata: Read is added automatically). Expiry: 90 days (the current token's lifetime; one year at most).
 2. Copy the token and, inside this clone, pipe it in — `git gh` is the repo's alias (see above), plain `gh` would act as the wrong account, and the value stays out of the shell history:
@@ -108,7 +110,7 @@ If step 11 fails after step 10 pushed, create the release by hand with `git gh r
 
 3. Re-run the **release token expiry** job (or push anything): its log and run summary show the expiry GitHub reports. Put that date, and a rotate-by date two weeks before it, in the title of the rotation issue ([#1](https://github.com/WizX20/PSVsCommand/issues/1)).
 
-The `check` job fails early with a clear message when the secret is missing. CI's required **release token expiry** job reads the token's real expiry from the API (`GitHub-Authentication-Token-Expiration` header) on every PR and push: a warning 30 days out, a failure 14 days out — so an expiring token blocks merges until it is rotated, and no date has to be maintained by hand. Rotating is the same three steps as above; the issue keeps the checklist. A push with this token also triggers CI on `main` for the release commit — expected, one extra run per release. Without expiry the same can be done with a GitHub App added to the ruleset's bypass list; not worth it for one maintainer.
+The `check` job fails early with a clear message when the secret is missing. CI's required **release token expiry** job reads the token's real expiry from the API (`GitHub-Authentication-Token-Expiration` header) on every PR and push, and in a weekly scheduled CI run on Mondays 05:00 UTC: a warning 30 days out, a failure 14 days out, and a failure when the secret is missing — so an expiring token blocks merges until it is rotated, and no date has to be maintained by hand. A failed scheduled run emails the maintainer, so a quiet week no longer hides a token that lapses before Tuesday's release. GitHub disables scheduled workflows after 60 days without repository activity; in a stretch that quiet, the dated rotation issue and GitHub's own expiry mail are the reminders left. Pull requests from forks and from Dependabot get no repository secrets, so the job skips them (a skipped job counts as passed for the required check). Rotating is the same three steps as above; the issue keeps the checklist. A push with this token also triggers CI on `main` for the release commit — expected, one extra run per release. Without expiry the same can be done with a GitHub App added to the ruleset's bypass list; not worth it for one maintainer.
 
 ### Branch rules (ruleset `main`)
 
