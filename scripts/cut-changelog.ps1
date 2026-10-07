@@ -42,9 +42,11 @@ param(
     [string]$Version,
     [Parameter(ParameterSetName = 'Cut')][switch]$FallbackFromGit,
     [Parameter(Mandatory, ParameterSetName = 'Check')][switch]$Check,
-    [string]$Root = (Split-Path $PSScriptRoot -Parent)
+    [string]$Root
 )
 $ErrorActionPreference = 'Stop'
+# Not a parameter default: Windows PowerShell 5.1 leaves $PSScriptRoot empty there under -File.
+if (-not $Root) { $Root = Split-Path $PSScriptRoot -Parent }
 
 # Keep a Changelog's sections, in its order; the key is how a fragment file spells it.
 $sections = [ordered]@{ added = 'Added'; changed = 'Changed'; deprecated = 'Deprecated'; removed = 'Removed'; fixed = 'Fixed'; security = 'Security' }
