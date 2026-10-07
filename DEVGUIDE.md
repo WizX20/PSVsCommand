@@ -78,7 +78,7 @@ The `check` job decides first, on `main`:
 2. **Which version?** The dispatch input if given; else the manifest's `ModuleVersion` when no tag for it exists yet (first release, or a bump made in a PR); else the next patch of it. For a **minor/major** bump, raise `ModuleVersion` in `src/PSVsCommand/PSVsCommand.psd1` in your PR — the next release ships exactly that.
 3. **Validate** — plain `x.y.z`, no such tag yet, not below the manifest version.
 4. **Release token** — the `PSVSCOMMAND_RELEASE_TOKEN` secret must exist.
-5. **Gate on CI** — the CI run of the exact commit being released must be `success` (it waits up to 20 minutes for a run still going).
+5. **Gate on CI** — the CI run of the exact commit being released must be `success` (it waits up to 20 minutes for a run still going). An API error, or no CI run after five minutes, refuses the release rather than letting it through: the release job only tests on PowerShell 7, so without CI a Windows PowerShell 5.1 regression could ship.
 
 Then the `release` job, on the commit step 5 verified — not whatever `main` is by then (a merge during the CI wait would otherwise ship untested, or stamp the next patch over a minor bump that just landed):
 
