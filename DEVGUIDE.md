@@ -99,7 +99,7 @@ If step 13 fails after step 12 pushed, `main`'s manifest points at a zip nobody 
 
 ### Required secret: `PSVSCOMMAND_RELEASE_TOKEN`
 
-`main` is protected by a ruleset (pull requests only, squash merges only, CI checks required, no force-push; only the repository admin may bypass). `GITHUB_TOKEN` cannot bypass rulesets on a user-owned repository, so the release commit is pushed with a maintainer token:
+`main` is protected by a ruleset (pull requests only, squash merges only, CI checks required, no force-push; only the repository admin may bypass). `GITHUB_TOKEN` cannot bypass rulesets on a user-owned repository, so the release commit is pushed with a maintainer token. Only the push step sees it: both checkouts persist no credentials, so lint, the tests and the modules they install never run next to a token that may bypass the ruleset. `GITHUB_TOKEN` gets per-job permissions only — `check` reads contents and actions (the CI runs), `release` writes contents (the GitHub Release). To create the token:
 
 1. GitHub → Settings → Developer settings → Personal access tokens → **Fine-grained tokens** → Generate. Resource owner `WizX20`, repository access: only `PSVsCommand` (PSWorktree has its own token, `PSWORKTREE_RELEASE_TOKEN`), permissions: **Contents: Read and write** (Metadata: Read is added automatically). Expiry: 90 days (the current token's lifetime; one year at most).
 2. Copy the token and, inside this clone, pipe it in — `git gh` is the repo's alias (see above), plain `gh` would act as the wrong account, and the value stays out of the shell history:
