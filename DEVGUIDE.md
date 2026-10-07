@@ -9,6 +9,8 @@ src/PSVsCommand/PSVsCommand.psm1   the module: all helpers + the `vs` dispatcher
 src/PSVsCommand/PSVsCommand.psd1   module manifest (ModuleVersion is the release version)
 src/PSVsCommand/vs.ps1             entry script for shells without the module (the Scoop shim runs it)
 tests/PSVsCommand.Tests.ps1        Pester 5+ suite; fake Visual Studio installs under $TestDrive
+tests/Scripts.Tests.ps1            Pester tests for the dev scripts in scripts/
+changelog.d/                       one release-notes fragment per pull request; the release folds them into CHANGELOG.md
 scripts/                           lint / test / pack / set-version / cut-changelog / dev-link
 bucket/psvscommand.json            Scoop manifest; this repo doubles as the Scoop bucket
 .github/workflows/ci.yml           lint + test on pwsh and Windows PowerShell 5.1, pack, release-token expiry; also weekly
@@ -82,7 +84,7 @@ The `check` job decides first, on `main`:
 
 Then the `release` job, on the commit step 5 verified — not whatever `main` is by then (a merge during the CI wait would otherwise ship untested, or stamp the next patch over a minor bump that just landed):
 
-6. **Stamp** — `scripts/set-version.ps1` writes `ModuleVersion`; `scripts/cut-changelog.ps1 -FallbackFromGit` turns `## [Unreleased]` into `## [x.y.z] - <date>` and extracts that section as the release notes. An empty section is filled from the commit subjects since the last tag, so write readable subjects even when you skip the changelog.
+6. **Stamp** — `scripts/set-version.ps1` writes `ModuleVersion`; `scripts/cut-changelog.ps1 -FallbackFromGit` folds the `changelog.d/` fragments (and any lines still under `## [Unreleased]`) into a new `## [x.y.z] - <date>` section, grouped per Keep a Changelog section, deletes the fragments and extracts that section as the release notes. With no entries at all it uses the commit subjects since the last tag, so write readable subjects even when a change needs no fragment.
 7. **Lint + test** the stamped module.
 8. **Pack** — `scripts/pack.ps1` builds `dist/PSVsCommand-x.y.z.zip` (top-level `PSVsCommand/` folder with `PSVsCommand.psd1`, `PSVsCommand.psm1`, `vs.ps1`, `LICENSE`, `NOTICE`) and prints its SHA256.
 9. **Bump the bucket** — `bucket/psvscommand.json` gets the new `version`, `url` and `hash`, edited in place.
@@ -135,7 +137,7 @@ Not yet. winget has no notion of PowerShell modules; publishing `vs` there means
 
 ## Conventions
 
-- **Changelog** — add a line under `## [Unreleased]` for user-visible changes; the release workflow stamps the version. Never edit released sections.
+- **Changelog** — a user-visible change adds a fragment `changelog.d/<branch>.<section>.md` ([format](changelog.d/README.md)); `scripts/cut-changelog.ps1` folds the fragments into `CHANGELOG.md` at release and deletes them. Never edit released sections.
 - **Help text** — `Show-VsHelp` is the contract; the README quotes it. Change both.
 - **Commits** — new commits, no amends of published commits, no skipped hooks.
 - **Starting Visual Studio** — always through `Start-VsProcess` (one place to mock, one place that quotes), never `Start-Process devenv` inline.

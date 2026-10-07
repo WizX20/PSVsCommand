@@ -40,7 +40,7 @@ Closing the issue (usually through `Fixes #n` in the PR) ends the status; there 
 2. Make your change. Keep the diff focused — one concern per PR.
 3. Run `task check` (PSScriptAnalyzer + Pester). Add or extend a test in `tests/PSVsCommand.Tests.ps1` for behaviour you changed; fake installs and solution files under `$TestDrive` cover most things without Visual Studio.
 4. Try it for real in a folder with a few solutions. The picker and the confirm prompt are interactive and not covered by Pester.
-5. Update [`CHANGELOG.md`](CHANGELOG.md) — add a line under **Unreleased** for any user-visible change. Never edit released sections.
+5. For any user-visible change, add a changelog fragment: `changelog.d/<branch>.<section>.md` with a `- ` bullet ([how](changelog.d/README.md)). Do not edit `CHANGELOG.md` itself: one file per PR means no PR conflicts with another over it.
 6. Update `Show-VsHelp` in `src/PSVsCommand/PSVsCommand.psm1` if a command, flag or behaviour changed, and paste the new `task help` output into the README's `vs --help` block.
 7. Push and open a PR against `main`. Reference any related issue (`Fixes #123`).
 

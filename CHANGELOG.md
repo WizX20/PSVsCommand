@@ -2,7 +2,7 @@
 
 All notable changes to PSVsCommand (`vs`) are listed here, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are [semantic](https://semver.org/).
-Write new entries under **Unreleased** — the Release workflow stamps the version and date.
+New entries go in [changelog.d/](changelog.d/README.md), one file per pull request — the Release workflow folds them in here under the new version and date.
 
 ## [Unreleased]
 
