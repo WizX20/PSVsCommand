@@ -80,13 +80,13 @@ The `check` job decides first, on `main`:
 4. **Release token** — the `PSVSCOMMAND_RELEASE_TOKEN` secret must exist.
 5. **Gate on CI** — the CI run of the exact commit being released must be `success` (it waits up to 20 minutes for a run still going).
 
-Then the `release` job:
+Then the `release` job, on the commit step 5 verified — not whatever `main` is by then (a merge during the CI wait would otherwise ship untested, or stamp the next patch over a minor bump that just landed):
 
 6. **Stamp** — `scripts/set-version.ps1` writes `ModuleVersion`; `scripts/cut-changelog.ps1 -FallbackFromGit` turns `## [Unreleased]` into `## [x.y.z] - <date>` and extracts that section as the release notes. An empty section is filled from the commit subjects since the last tag, so write readable subjects even when you skip the changelog.
 7. **Lint + test** the stamped module.
 8. **Pack** — `scripts/pack.ps1` builds `dist/PSVsCommand-x.y.z.zip` (top-level `PSVsCommand/` folder with `PSVsCommand.psd1`, `PSVsCommand.psm1`, `vs.ps1`, `LICENSE`, `NOTICE`) and prints its SHA256.
 9. **Bump the bucket** — `bucket/psvscommand.json` gets the new `version`, `url` and `hash`, edited in place.
-10. **Commit + tag** `chore: release vx.y.z` on `main` (as `github-actions[bot]`, pushed with the release token), with the `vx.y.z` tag.
+10. **Commit + tag** `chore: release vx.y.z` (as `github-actions[bot]`) with the `vx.y.z` tag, pushed to `main` with the release token — atomically: branch and tag land together or not at all. When `main` moved meanwhile the push is refused and nothing is published; run the release again.
 11. **GitHub Release** `vx.y.z` with the zip attached and the changelog section as body.
 
 If step 11 fails after step 10 pushed, create the release by hand with `git gh release create vx.y.z dist/PSVsCommand-x.y.z.zip` from a fresh checkout of the tag — the tag check in step 3 refuses a re-run.
