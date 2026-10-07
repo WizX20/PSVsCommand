@@ -34,6 +34,6 @@ task release [VERSION=x.y.z] # dispatch the Release workflow now; it also runs w
 - **Exit code**: anything that did not happen as asked goes through `Write-VsFail` (sets `$script:VsExitCode`, which `vs.ps1` exits with); a warning that still lets the command succeed stays a plain `Write-Host`.
 - **Changelog**: a user-visible change adds a fragment `changelog.d/<branch>.<section>.md` (see `changelog.d/README.md`) — never edit `CHANGELOG.md` in a PR; the release folds the fragments in and stamps the version (with no entries at all it falls back to commit subjects, so keep subjects readable). Do not touch released sections.
 - **Versions**: patch bumps are automatic. For a minor/major, raise `ModuleVersion` in `src/PSVsCommand/PSVsCommand.psd1` in the PR; the next release ships that version.
-- **Help is the contract**: change `Show-VsHelp` and paste `task help` into the README block (replace the machine paths in the last NOTES lines with the `C:\Users\you\…` placeholders).
+- **Help is the contract**: change `Show-VsHelp` and paste `task help` into the README block (replace the machine paths in the last NOTES lines with the `C:\Users\you\…` placeholders). A test compares the two with those two lines normalised, so a help change without the README fails `task test`.
 - **Commits**: imperative subject ≤72 chars, new commits (no amend), no `--no-verify`. Branches `feature/…`, `fix/…`, `chore/…` off `main`.
 - **Do not commit or push without asking**; never push to `main` directly — open a PR.

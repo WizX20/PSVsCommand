@@ -48,6 +48,7 @@ task help                   # print `vs --help` (the README quotes it verbatim)
 - Exit codes: failures go through `Write-VsFail`, which sets `$script:VsExitCode`; `vs.ps1` exits with it. The `vs.ps1` tests start the entry script as a child process of the same edition, the way Scoop's `vs.cmd` does.
 - `vs` prints through `Write-Host`; tests capture it with `6>&1` (the `Get-VsOutput { vs ... }` helper). Call `vs` with real switches inside the block — splatting `'-Yes'` as a string would bind it positionally.
 - The picker and the confirm prompt read the console directly and are not under test (`Test-VsConsole` is mocked to `$false`, which takes the plain-text paths); try them by hand in a folder with a few solutions.
+- When `task help` changes, paste it into the README's `vs --help` block. Two lines differ per machine — keep `settings and caches: C:\Users\you\AppData\Local\PSVsCommand` and `module: C:\Users\you\scoop\apps\psvscommand\current` there. A test compares the two with those lines normalised, so a help change without the README fails `task test`.
 
 ## GitHub account: everything as WizX20
 
