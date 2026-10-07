@@ -2,16 +2,9 @@
 
 All notable changes to PSVsCommand (`vs`) are listed here, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions are [semantic](https://semver.org/).
-Write new entries under **Unreleased** — the Release workflow stamps the version and date.
+New entries go in [changelog.d/](changelog.d/README.md), one file per pull request — the Release workflow folds them in here under the new version and date.
 
 ## [Unreleased]
-
-### Fixed
-
-- Release pipeline: a release ships exactly the commit CI verified, pushes the release commit and tag atomically, and
-  drafts the GitHub Release before the push and publishes it after — so the Scoop manifest on `main` never points at a
-  zip that is not there. It refuses to release when CI's verdict is unknown, and keeps the release token out of every
-  step but the push. A weekly CI run catches an expiring release token in a quiet week.
 
 ## [1.0.2] - 2026-10-06
 
