@@ -25,6 +25,8 @@ jobs:
   test:
     name: lint + test (${{ matrix.shell }})
     runs-on: windows-latest
+    # A hung analyzer or test run fails here, not after GitHub's 6-hour default.
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -54,6 +56,7 @@ jobs:
     name: pack module zip
     needs: test
     runs-on: windows-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -69,6 +72,7 @@ jobs:
   token-expiry:
     name: release token expiry
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     # Pull requests from forks carry no secrets, and neither do Dependabot's (it only gets the
     # separate Dependabot secrets): nothing to check there, and the job must not block them - a
     # skipped job counts as passed for the required check. Everything else (own branches, pushes
