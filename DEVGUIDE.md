@@ -27,7 +27,7 @@ Import-Module PSVsCommand -Force # after every edit
 task unlink                     # remove the junction
 ```
 
-Or skip the junction and load by path: `Import-Module ./src/PSVsCommand -Force`. To try the shim path, run the entry script the way Scoop's `vs.cmd` does: `pwsh -NoProfile -File src/PSVsCommand/vs.ps1 list -All`.
+`task link` in another checkout or worktree points the junction there (it says `re-pointing`); one left pointing at a deleted worktree is fixed the same way. Or skip the junction and load by path: `Import-Module ./src/PSVsCommand -Force`. To try the shim path, run the entry script the way Scoop's `vs.cmd` does: `pwsh -NoProfile -File src/PSVsCommand/vs.ps1 list -All`.
 
 Set `PSVSCOMMAND_HOME` to a scratch folder to keep your experiments away from your real settings and install cache (`%LOCALAPPDATA%\PSVsCommand`).
 

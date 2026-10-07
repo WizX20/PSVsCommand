@@ -68,3 +68,75 @@ Describe 'cut-changelog' {
         { & $script:CutChangelog -Check 6>$null } | Should -Not -Throw
     }
 }
+
+Describe 'dev-link' {
+    # Every test removes its junction in `finally`, and AfterAll removes any that is left: a
+    # junction into src/ must never meet $TestDrive's recursive cleanup - Windows PowerShell 5.1's
+    # Remove-Item -Recurse can follow it and delete the checkout's files.
+    BeforeAll {
+        $script:DevLink = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts\dev-link.ps1'
+        $script:SrcManifest = Join-Path (Split-Path $PSScriptRoot -Parent) 'src\PSVsCommand\PSVsCommand.psd1'
+
+        function script:New-TestLink {
+            # A junction like the one dev-link makes, to $Target, in a fresh modules folder.
+            param([string]$Modules, [string]$Target)
+            New-Item -ItemType Directory -Force -Path $Modules | Out-Null
+            New-Item -ItemType Junction -Path (Join-Path $Modules 'PSVsCommand') -Target $Target | Out-Null
+        }
+    }
+
+    AfterAll {
+        foreach ($dir in @(Get-ChildItem -LiteralPath $TestDrive -Directory -Force)) {
+            $left = Get-Item -LiteralPath (Join-Path $dir.FullName 'PSVsCommand') -Force -ErrorAction SilentlyContinue
+            if ($left -and $left.LinkType) { $left.Delete() }
+        }
+    }
+
+    It 'links the working copy, says so the second time, and removes only the link' {
+        $modules = Join-Path $TestDrive 'once'
+        try {
+            & $script:DevLink -ModulesPath $modules 6>$null
+            (Get-Item -LiteralPath (Join-Path $modules 'PSVsCommand') -Force).LinkType | Should -Be 'Junction'
+            Test-Path -LiteralPath (Join-Path $modules 'PSVsCommand\PSVsCommand.psd1') | Should -BeTrue
+            (& $script:DevLink -ModulesPath $modules 6>&1 | Out-String) | Should -Match 'already linked'
+        }
+        finally { & $script:DevLink -ModulesPath $modules -Remove 6>$null }
+        Test-Path -LiteralPath (Join-Path $modules 'PSVsCommand') | Should -BeFalse
+        Test-Path -LiteralPath $script:SrcManifest | Should -BeTrue
+    }
+
+    It 're-points a link whose checkout is gone' {
+        $modules = Join-Path $TestDrive 'gone'
+        $old = Join-Path $TestDrive 'old-worktree'
+        New-Item -ItemType Directory -Path $old | Out-Null
+        New-TestLink -Modules $modules -Target $old
+        Remove-Item -LiteralPath $old
+        try {
+            (& $script:DevLink -ModulesPath $modules 6>&1 | Out-String) | Should -Match 're-pointing'
+            Test-Path -LiteralPath (Join-Path $modules 'PSVsCommand\PSVsCommand.psd1') | Should -BeTrue
+        }
+        finally { & $script:DevLink -ModulesPath $modules -Remove 6>$null }
+    }
+
+    It 're-points a link to another checkout, and leaves that checkout alone' {
+        $modules = Join-Path $TestDrive 'other'
+        $other = Join-Path $TestDrive 'other-checkout'
+        New-Item -ItemType Directory -Path $other | Out-Null
+        Set-Content -LiteralPath (Join-Path $other 'keep.txt') -Value 'x'
+        New-TestLink -Modules $modules -Target $other
+        try {
+            (& $script:DevLink -ModulesPath $modules 6>&1 | Out-String) | Should -Match 're-pointing'
+            Test-Path -LiteralPath (Join-Path $modules 'PSVsCommand\PSVsCommand.psd1') | Should -BeTrue
+            Test-Path -LiteralPath (Join-Path $other 'keep.txt') | Should -BeTrue
+        }
+        finally { & $script:DevLink -ModulesPath $modules -Remove 6>$null }
+    }
+
+    It 'refuses to replace or remove a real directory' {
+        $modules = Join-Path $TestDrive 'real'
+        New-Item -ItemType Directory -Path (Join-Path $modules 'PSVsCommand') | Out-Null
+        { & $script:DevLink -ModulesPath $modules 6>$null } | Should -Throw '*real directory*'
+        { & $script:DevLink -ModulesPath $modules -Remove 6>$null } | Should -Throw '*real directory*'
+        Test-Path -LiteralPath (Join-Path $modules 'PSVsCommand') | Should -BeTrue
+    }
+}
