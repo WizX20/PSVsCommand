@@ -96,9 +96,14 @@ Then the `release` job, on the commit step 5 verified — not whatever `main` is
 
 If step 13 fails after step 12 pushed, `main`'s manifest points at a zip nobody can download yet. Publish the draft by hand: `git gh release edit vx.y.z --draft=false --latest`. Do **not** re-pack and upload a zip from the tag: a rebuilt zip has another SHA256 than the hash the pushed manifest carries, and every `scoop install` would fail on it. As long as `main` is still at that tag, every later run — weekly or dispatched — stops in step 1 with that same command, instead of reporting "nothing to release". If the draft is gone, its zip went with it: merge anything to `main` and release again; the next version carries a fresh zip and hash.
 
-### First release
+### Repository setup
 
-`bucket/psvscommand.json` ships with a placeholder hash (all zeros) until the first release has run; `scoop install psvscommand` fails with a hash mismatch before that. Run `task release` once the repo is on GitHub, the release token is set and CI is green — it ships the manifest's `1.0.0`.
+Done once, before `1.0.0` (2026-10-01); kept as the checklist for a repository like this one:
+
+1. `WizX20/PSVsCommand` is **public**: Scoop downloads release assets anonymously, and `vs update` reads the `releases/latest` redirect the same way (see [Repo visibility](#repo-visibility)).
+2. The `PSVSCOMMAND_RELEASE_TOKEN` secret (below), with a dated `maintenance` issue to rotate it ([#1](https://github.com/WizX20/PSVsCommand/issues/1)).
+3. The ruleset `main` (below): pull requests only, squash merges only, the four required checks. Labels as in [CONTRIBUTING.md → Issue labels](CONTRIBUTING.md#issue-labels).
+4. `task release` shipped the manifest's version; until then `bucket/psvscommand.json` carried a placeholder hash (all zeros) and `scoop install psvscommand` failed with a hash mismatch. From then on the release workflow keeps the manifest in step.
 
 ### Required secret: `PSVSCOMMAND_RELEASE_TOKEN`
 
